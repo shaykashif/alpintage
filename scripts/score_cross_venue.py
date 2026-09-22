@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -55,19 +56,32 @@ def main() -> None:
         return
 
     already_scored = {r["kalshi_event_ticker"] for r in _load_jsonl(SCORED_PATH)}
+
+    # Dedupe by ticker BEFORE hitting the API -- run_cross_venue_scanner.py
+    # can still produce some duplicate rows for the same ticker (e.g. across
+    # a restart), and this file may also predate that fix. Without this,
+    # a ticker logged N times costs N Kalshi calls in a single run here.
+    # Confirmed live: this, combined with no delay between calls, was
+    # enough real traffic to Kalshi's public API to get rate-limited (429).
+    rows_by_ticker: dict[str, dict] = {}
+    for row in rows:
+        ticker = row["kalshi_event_ticker"]
+        if ticker not in already_scored and ticker not in rows_by_ticker:
+            rows_by_ticker[ticker] = row
+
+    print(f"{len(rows)} logged rows -> {len(rows_by_ticker)} unique unscored tickers to check")
+
     client = PublicClient()
     newly_scored = []
 
-    for row in rows:
-        ticker = row["kalshi_event_ticker"]
-        if ticker in already_scored:
-            continue
-
+    for ticker, row in rows_by_ticker.items():
         try:
             markets = client.markets(event_ticker=ticker, status="settled")
         except Exception as exc:  # noqa: BLE001
             print(f"  {ticker}: could not fetch ({exc})")
+            time.sleep(0.2)
             continue
+        time.sleep(0.2)  # be polite to Kalshi's API -- this loop can run over 100+ tickers
         if len(markets) < 2:
             continue  # not settled yet (or an odd event shape) -- try again later
 

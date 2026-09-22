@@ -41,6 +41,7 @@ def main() -> None:
             print(f"  {row['ticker']}: could not fetch ({exc}), skipping")
             continue
 
+        time.sleep(0.15)  # be polite to Kalshi's API even for the (usually more common) unsettled case
         status = m.get("status")
         if status != "settled":
             continue
