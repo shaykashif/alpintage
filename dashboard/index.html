@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kalshi Engine Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --border: #262b36; --text: #e6e8ec;
+    --muted: #8b93a3; --accent: #4f8cff; --accent2: #ff8a4f;
+    --good: #3ecf8e; --bad: #ff5c5c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 14px;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin-bottom: 24px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .panel h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .stat-row { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 14px; }
+  .stat { }
+  .stat .n { font-size: 24px; font-weight: 600; }
+  .stat .l { color: var(--muted); font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; }
+  .pill.good { background: rgba(62,207,142,.15); color: var(--good); }
+  .pill.bad { background: rgba(255,92,92,.15); color: var(--bad); }
+  .pill.stale { background: rgba(255,92,92,.15); color: var(--bad); }
+  .pill.live { background: rgba(62,207,142,.15); color: var(--good); }
+  canvas { max-height: 260px; }
+  .empty { color: var(--muted); font-style: italic; padding: 20px 0; text-align: center; }
+  pre.log { max-height: 220px; overflow-y: auto; font-size: 11px; color: var(--muted); white-space: pre-wrap; margin: 0; }
+  .full { grid-column: 1 / -1; }
+  footer { margin-top: 20px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>Kalshi Engine Dashboard</h1>
+  <div class="sub">Jev signal validation, cross-venue mispricing scan, paper trading -- no real orders anywhere. <span id="updated"></span></div>
+
+  <div class="grid">
+
+    <div class="panel">
+      <h2>Loop health</h2>
+      <div id="loop-health"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Jev vs. market -- Brier score (lower is better)</h2>
+      <div id="brier-stats" class="stat-row"></div>
+      <canvas id="brierChart"></canvas>
+    </div>
+
+    <div class="panel">
+      <h2>Cross-venue divergence distribution</h2>
+      <div id="cv-stats" class="stat-row"></div>
+      <canvas id="diffChart"></canvas>
+    </div>
+
+    <div class="panel">
+      <h2>Paper trading</h2>
+      <div id="paper-stats" class="stat-row"></div>
+    </div>
+
+    <div class="panel full">
+      <h2>Biggest cross-venue disagreements (logged)</h2>
+      <div id="cv-table"></div>
+    </div>
+
+    <div class="panel full">
+      <h2>Recent Jev predictions</h2>
+      <div id="pred-table"></div>
+    </div>
+
+    <div class="panel full">
+      <h2>Recent loop activity</h2>
+      <pre class="log" id="loop-log"></pre>
+    </div>
+
+  </div>
+
+  <footer>Auto-refreshes every 60s. Detection and paper-trading only -- nothing here places a real order.</footer>
+
+<script>
+let brierChart, diffChart;
+
+function fmtPct(x) { return x === null || x === undefined ? '--' : (x * 100).toFixed(1) + '%'; }
+function fmtNum(x, d=4) { return x === null || x === undefined ? '--' : x.toFixed(d); }
+function timeAgo(iso) {
+  if (!iso) return '--';
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return Math.floor(s) + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+async function refresh() {
+  const res = await fetch('/api/summary');
+  const data = await res.json();
+  document.getElementById('updated').textContent = 'updated ' + timeAgo(data.generated_at);
+
+  renderLoopHealth(data.loop_health);
+  renderPredictions(data.predictions);
+  renderCrossVenue(data.cross_venue);
+  renderPaper(data.paper_trading);
+}
+
+function renderLoopHealth(h) {
+  const el = document.getElementById('loop-health');
+  if (!h.last_line_at) {
+    el.innerHTML = '<div class="empty">run_loop.py hasn\'t logged anything yet</div>';
+    document.getElementById('loop-log').textContent = '';
+    return;
+  }
+  const pill = h.stale ? '<span class="pill stale">STALE</span>' : '<span class="pill live">LIVE</span>';
+  el.innerHTML = `<div class="stat-row"><div class="stat"><div class="n">${pill}</div><div class="l">last activity: ${timeAgo(h.last_line_at)}</div></div></div>`;
+  document.getElementById('loop-log').textContent = h.recent_lines.join('\n');
+}
+
+function renderPredictions(p) {
+  const stats = document.getElementById('brier-stats');
+  stats.innerHTML = `
+    <div class="stat"><div class="n">${p.total_logged}</div><div class="l">total logged</div></div>
+    <div class="stat"><div class="n">${p.total_real_jev_calls}</div><div class="l">real Jev calls</div></div>
+    <div class="stat"><div class="n">${p.total_scored}</div><div class="l">settled &amp; scored</div></div>
+    <div class="stat"><div class="n">${fmtNum(p.jev_brier)}</div><div class="l">Jev Brier</div></div>
+    <div class="stat"><div class="n">${fmtNum(p.market_brier)}</div><div class="l">market Brier</div></div>
+  `;
+
+  const ctx = document.getElementById('brierChart');
+  if (!p.brier_trend || p.brier_trend.length === 0) {
+    ctx.style.display = 'none';
+    if (!document.getElementById('brier-empty')) {
+      const div = document.createElement('div');
+      div.id = 'brier-empty'; div.className = 'empty';
+      div.textContent = `Need 10+ settled predictions to chart a trend (have ${p.total_scored})`;
+      ctx.parentElement.appendChild(div);
+    }
+  } else {
+    ctx.style.display = 'block';
+    const old = document.getElementById('brier-empty'); if (old) old.remove();
+    const labels = p.brier_trend.map(r => r.n);
+    const jevData = p.brier_trend.map(r => r.jev_brier);
+    const marketData = p.brier_trend.map(r => r.market_brier);
+    if (brierChart) brierChart.destroy();
+    brierChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: [
+        { label: 'Jev', data: jevData, borderColor: '#4f8cff', tension: 0.2, pointRadius: 0 },
+        { label: 'Market', data: marketData, borderColor: '#ff8a4f', tension: 0.2, pointRadius: 0 },
+      ]},
+      options: { responsive: true, scales: { x: { title: { display: true, text: '# settled predictions' } } } }
+    });
+  }
+
+  const table = document.getElementById('pred-table');
+  if (!p.recent.length) { table.innerHTML = '<div class="empty">nothing logged yet</div>'; return; }
+  table.innerHTML = '<table><tr><th>Ticker</th><th>Market</th><th>Jev</th><th>Outcome</th><th>Logged</th></tr>' +
+    p.recent.map(r => `<tr><td>${r.ticker}</td><td>${fmtPct(r.market_prob)}</td><td>${fmtPct(r.jev_prob)}</td>` +
+      `<td>${r.outcome === null ? '<span class="pill">pending</span>' : (r.outcome ? '<span class="pill good">YES</span>' : '<span class="pill bad">NO</span>')}</td>` +
+      `<td>${timeAgo(r.logged_at)}</td></tr>`).join('') + '</table>';
+}
+
+function renderCrossVenue(c) {
+  const stats = document.getElementById('cv-stats');
+  stats.innerHTML = `
+    <div class="stat"><div class="n">${c.total_logged}</div><div class="l">comparisons logged</div></div>
+    <div class="stat"><div class="n">${fmtPct(c.avg_diff)}</div><div class="l">avg divergence</div></div>
+    <div class="stat"><div class="n">${fmtPct(c.max_diff)}</div><div class="l">max divergence</div></div>
+    <div class="stat"><div class="n">${Object.keys(c.by_league).length}</div><div class="l">leagues</div></div>
+  `;
+
+  const ctx = document.getElementById('diffChart');
+  if (!c.total_logged) {
+    ctx.style.display = 'none';
+  } else {
+    ctx.style.display = 'block';
+    const labels = c.histogram_bins.slice(0, -1).map((b, i) => `${(b*100).toFixed(0)}-${(c.histogram_bins[i+1]*100).toFixed(0)}%`);
+    if (diffChart) diffChart.destroy();
+    diffChart = new Chart(ctx, {
+      type: 'bar',
+      data: { labels, datasets: [{ label: 'games', data: c.histogram_counts, backgroundColor: '#4f8cff' }] },
+      options: { responsive: true, plugins: { legend: { display: false } } }
+    });
+  }
+
+  const table = document.getElementById('cv-table');
+  if (!c.top_divergences.length) { table.innerHTML = '<div class="empty">nothing logged yet</div>'; return; }
+  table.innerHTML = '<table><tr><th>League</th><th>Game</th><th>Kalshi</th><th>Diff</th><th>Logged</th></tr>' +
+    c.top_divergences.map(r => `<tr><td>${(r.league||'').toUpperCase()}</td><td>${r.kalshi_event_ticker}</td>` +
+      `<td>${JSON.stringify(r.kalshi_probs)}</td><td>${fmtPct(r.diff)}</td><td>${timeAgo(r.logged_at)}</td></tr>`).join('') + '</table>';
+}
+
+function renderPaper(p) {
+  const stats = document.getElementById('paper-stats');
+  const pnl = p.pnl_summary;
+  let pnlHtml = '';
+  if (pnl && (pnl.settled_count > 0)) {
+    const cls = pnl.net_pnl >= 0 ? 'good' : 'bad';
+    pnlHtml = `<div class="stat"><div class="n" style="color:var(--${cls})">$${pnl.net_pnl.toFixed(2)}</div><div class="l">net paper PnL (${pnl.settled_count} settled)</div></div>`;
+  }
+  stats.innerHTML = `
+    <div class="stat"><div class="n">${p.total_fills}</div><div class="l">fills</div></div>
+    <div class="stat"><div class="n">${p.total_vetoes}</div><div class="l">risk-gate vetoes</div></div>
+    ${pnlHtml}
+  `;
+  if (!p.total_fills && !p.total_vetoes) {
+    stats.innerHTML += '<div class="empty">no paper trades yet -- normal, arb violations are rare by design</div>';
+  }
+}
+
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>

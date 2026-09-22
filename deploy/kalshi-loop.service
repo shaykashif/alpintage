@@ -1,0 +1,16 @@
+[Unit]
+Description=Kalshi engine: scanner + Jev prediction loop (paper only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Set to the actual clone path if it differs.
+WorkingDirectory=/opt/alpintage
+ExecStart=/opt/alpintage/.venv/bin/python scripts/run_loop.py --interval-min 30
+Restart=on-failure
+RestartSec=30
+EnvironmentFile=/opt/alpintage/.env
+
+[Install]
+WantedBy=multi-user.target

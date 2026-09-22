@@ -1,0 +1,15 @@
+[Unit]
+Description=Kalshi engine dashboard (web panel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/alpintage
+ExecStart=/opt/alpintage/.venv/bin/python scripts/dashboard_server.py --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=15
+EnvironmentFile=/opt/alpintage/.env
+
+[Install]
+WantedBy=multi-user.target
