@@ -37,7 +37,8 @@ class KalshiGame:
     event_ticker: str
     close_time: str | None
     scheduled_date: str | None  # the actual game date, parsed from rules text
-    team_probs: dict[str, float]  # team name (Kalshi's yes_sub_title) -> market implied prob
+    team_probs: dict[str, float]  # team name (Kalshi's yes_sub_title) -> mid of yes_bid/yes_ask
+    team_asks: dict[str, float]  # team name -> yes_ask_dollars -- the real price a buy would pay
     team_tickers: dict[str, str]  # team name -> market ticker
     rules_text: str  # rules_primary from either team's market -- names both teams
 
@@ -54,13 +55,14 @@ def fetch_moneyline_games(series_ticker: str, max_pages: int = 5) -> list[Kalshi
     for event_ticker, legs in by_event.items():
         if len(legs) != 2:
             continue  # a plain moneyline game has exactly two team-markets
-        team_probs, team_tickers = {}, {}
+        team_probs, team_asks, team_tickers = {}, {}, {}
         for m in legs:
             prob = market_implied_prob(m)
             if prob is None:
                 continue
             team = m.get("yes_sub_title") or m["ticker"]
             team_probs[team] = prob
+            team_asks[team] = float(m["yes_ask_dollars"])
             team_tickers[team] = m["ticker"]
         if len(team_probs) != 2:
             continue  # skip games with an empty book on either side
@@ -70,6 +72,7 @@ def fetch_moneyline_games(series_ticker: str, max_pages: int = 5) -> list[Kalshi
             close_time=legs[0].get("close_time"),
             scheduled_date=extract_scheduled_date(rules_text),
             team_probs=team_probs,
+            team_asks=team_asks,
             team_tickers=team_tickers,
             rules_text=rules_text,
         ))

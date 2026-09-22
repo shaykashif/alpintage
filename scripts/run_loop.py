@@ -1,7 +1,13 @@
 """Run the scanner, the Jev collector, and (periodically) the cross-venue
-comparison on a repeating interval, for multi-day unattended paper testing.
-Nothing here sends a real order -- run_scanner.py --paper is simulated,
-collect_predictions.py and run_cross_venue_scanner.py only log.
+comparison + scoring on a repeating interval, for multi-day unattended
+paper testing. Nothing here sends a real order.
+
+run_scanner.py --paper trades on true arbitrage (ladder/bracket violations
+-- a mathematical guarantee). run_cross_venue_scanner.py --paper trades on
+statistical arbitrage (Kalshi vs. sportsbook/Polymarket divergence -- a
+hypothesis, not a guarantee) ONLY once score_cross_venue.py has logged
+enough settled games to show that hypothesis actually holds; see
+cross_venue_trust.py. Until then it only logs, same as before.
 
 Usage:
     uv run python scripts/run_loop.py
@@ -88,10 +94,16 @@ def main() -> None:
             _run([python, "scripts/score_paper_fills.py"])
 
             if args.cross_venue_every and (cycle == 1 or cycle % args.cross_venue_every == 0):
+                # --paper: acts on a cross-venue divergence ONLY if
+                # cross_venue_trust.py says that venue has earned it (30+
+                # settled games where it beat Kalshi's own Brier score).
+                # Until score_cross_venue.py below has logged that much
+                # evidence, this flag is a no-op -- see run_cross_venue_scanner.py.
                 _run(
-                    [python, "scripts/run_cross_venue_scanner.py", "--leagues", args.cross_venue_leagues],
+                    [python, "scripts/run_cross_venue_scanner.py", "--leagues", args.cross_venue_leagues, "--paper"],
                     timeout=600,  # a full multi-league scan can take minutes, not seconds
                 )
+                _run([python, "scripts/score_cross_venue.py"], timeout=180)
 
             if args.cycles and cycle >= args.cycles:
                 print("reached --cycles limit, stopping")

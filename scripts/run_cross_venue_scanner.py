@@ -4,15 +4,25 @@ SAME real-world game, verified by asking Jev whether each candidate pair
 actually describes the same game (see event_match.py for why: the sources
 name teams inconsistently).
 
-Detection and logging only. Never places a bet or a Kalshi order. Costs one
-Odds API call per league (cheap against the ~500/month free-tier quota) and
-real Jev calls (one per date-plausible candidate pair -- fine, per the
-project owner, Jev calls are inexpensive).
+Logging always happens. Paper-trading a divergence ("statistical
+arbitrage": Kalshi is mispriced relative to the cross-venue consensus, and
+will converge toward it) is GATED behind cross_venue_trust.py -- unlike the
+ladder/bracket checks in scanner.py, which are true arbitrage (mathematical
+guarantee), a cross-venue divergence is a hypothesis that needs to survive
+contact with real settled games (score_cross_venue.py) before anything
+sizes a bet on it. Until 30+ settled games show a venue's price beating
+Kalshi's own, this never places a paper trade -- it only logs. Never places
+a REAL order anywhere, on Kalshi or any other venue, regardless of trust.
+
+Costs one Odds API call per league (cheap against the ~500/month free-tier
+quota) and real Jev calls (one per date-plausible candidate pair -- fine,
+per the project owner, Jev calls are inexpensive).
 
 Usage:
     uv run python scripts/run_cross_venue_scanner.py
     uv run python scripts/run_cross_venue_scanner.py --leagues nfl,nba,mlb,nhl,ncaaf
     uv run python scripts/run_cross_venue_scanner.py --leagues all
+    uv run python scripts/run_cross_venue_scanner.py --paper   # also act on any trusted signal
 """
 from __future__ import annotations
 
@@ -25,24 +35,38 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from dotenv import load_dotenv  # noqa: E402
 
+from kalshi_engine.cross_venue_trust import venue_trust  # noqa: E402
 from kalshi_engine.devig import aggregate_fair_probs  # noqa: E402
 from kalshi_engine.event_match import confirm_same_game, dates_close, likely_same_game  # noqa: E402
+from kalshi_engine.fees import taker_fee  # noqa: E402
 from kalshi_engine.odds_client import get_odds  # noqa: E402
+from kalshi_engine.paper_broker import PaperBroker  # noqa: E402
 from kalshi_engine.polymarket_client import moneyline_markets, parse_outcomes  # noqa: E402
 from kalshi_engine.sports_kalshi import fetch_moneyline_games  # noqa: E402
 from kalshi_engine.sports_registry import SPORTS  # noqa: E402
+from run_scanner import _already_filled_tickers  # noqa: E402
 
 LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "cross_venue.jsonl"
+
+# Net-of-fee edge required before a TRUSTED cross-venue signal is worth
+# paper-trading. Conservative on purpose: this is a statistical-arbitrage
+# bet, not a guaranteed one, so it should need a bigger margin than a true
+# arb would to be worth the risk that the venues just disagree for reasons
+# that aren't about to resolve (thin liquidity, stale quotes, a real
+# resolution-rule mismatch).
+MIN_TRADE_EDGE = 0.03
+TRADE_QTY = 1
 
 
 def _name_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
-def _align_probs(kalshi_probs: dict, other_probs: dict) -> dict[str, float]:
+def best_team_assignment(kalshi_probs: dict, other_probs: dict) -> list[tuple[str, str]]:
     """Kalshi, Odds API, and Polymarket all spell team names differently
     ('Chicago' vs 'Chicago Bears' vs 'Bears') -- exact string equality
     basically never matches.
@@ -61,15 +85,17 @@ def _align_probs(kalshi_probs: dict, other_probs: dict) -> dict[str, float]:
     pairs at once. Character similarity (not word-overlap) is what
     correctly favors 'St.'<->'State' over the alternative.
 
-    This always returns a best-effort pairing, even for two totally
-    unrelated team lists -- it assumes the caller already confirmed (via
-    likely_same_game + Jev) that both sides describe the same real game
-    before calling this. It aligns WHICH team is which; it doesn't decide
-    whether they're the same game at all."""
+    Returns a list of (kalshi_team, other_team) pairs -- a best-effort
+    pairing even for two totally unrelated team lists, since this assumes
+    the caller already confirmed (via likely_same_game + Jev) that both
+    sides describe the same real game before calling this. It aligns WHICH
+    team is which; it doesn't decide whether they're the same game at all.
+    Shared with score_cross_venue.py, which needs the same alignment to
+    score each venue's own Brier score against the real outcome."""
     k_teams = list(kalshi_probs.keys())
     o_teams = list(other_probs.keys())
     if not k_teams or not o_teams:
-        return {}
+        return []
 
     n = min(len(k_teams), len(o_teams))
     best_pairs, best_score = None, -1.0
@@ -78,7 +104,13 @@ def _align_probs(kalshi_probs: dict, other_probs: dict) -> dict[str, float]:
         if score > best_score:
             best_score, best_pairs = score, list(zip(k_teams[:n], combo))
 
-    return {k: abs(kalshi_probs[k] - other_probs[o]) for k, o in best_pairs} if best_pairs else {}
+    return best_pairs or []
+
+
+def _align_probs(kalshi_probs: dict, other_probs: dict) -> dict[str, float]:
+    """Per-team |kalshi - other| using the alignment above."""
+    pairs = best_team_assignment(kalshi_probs, other_probs)
+    return {k: abs(kalshi_probs[k] - other_probs[o]) for k, o in pairs}
 
 
 def _max_divergence(kalshi_probs: dict, other_probs: dict) -> float | None:
@@ -86,7 +118,38 @@ def _max_divergence(kalshi_probs: dict, other_probs: dict) -> float | None:
     return max(diffs.values()) if diffs else None
 
 
-def scan_league(league_key: str) -> list[dict]:
+def _maybe_trade(kg, row: dict, broker: PaperBroker, already_filled: set[str]) -> None:
+    """Paper-buy YES on a Kalshi team ONLY if a venue is trusted
+    (venue_trust) AND the net-of-fee edge clears MIN_TRADE_EDGE. This is a
+    statistical-arbitrage bet (Kalshi converges toward the trusted venue's
+    price), not a guaranteed one -- see the module docstring for why that
+    distinction matters. Right now (0 settled games scored), venue_trust()
+    returns False for everything, so this is a no-op in practice until
+    score_cross_venue.py has real evidence."""
+    for venue_key, probs_key in (("odds_api", "odds_api_avg_probs"), ("polymarket", "polymarket_probs")):
+        venue_probs = row.get(probs_key)
+        if not venue_probs:
+            continue
+        trusted, reason = venue_trust(venue_key)
+        if not trusted:
+            continue
+
+        for k_team, o_team in best_team_assignment(kg.team_probs, venue_probs):
+            ticker = kg.team_tickers.get(k_team)
+            ask = kg.team_asks.get(k_team)
+            if ticker is None or ask is None or ticker in already_filled:
+                continue
+            fee = float(taker_fee(TRADE_QTY, ask))
+            edge = venue_probs[o_team] - ask - fee
+            if edge > MIN_TRADE_EDGE:
+                broker.buy(
+                    ticker, "yes", ask, qty=TRADE_QTY,
+                    reason=f"cross-venue stat-arb: {venue_key} trusted ({reason}), edge={edge:.3f}",
+                )
+                already_filled.add(ticker)
+
+
+def scan_league(league_key: str, broker: PaperBroker | None = None, already_filled: set[str] | None = None) -> list[dict]:
     cfg = SPORTS[league_key]
     print(f"\n=== {cfg.label} ===")
 
@@ -155,6 +218,9 @@ def scan_league(league_key: str) -> list[dict]:
         row["max_diff_vs_odds_api"] = _max_divergence(kg.team_probs, row["odds_api_avg_probs"] or {})
         row["max_diff_vs_polymarket"] = _max_divergence(kg.team_probs, row["polymarket_probs"] or {})
 
+        if broker is not None:
+            _maybe_trade(kg, row, broker, already_filled or set())
+
         label = kg.rules_text.split(", then")[0].replace("If ", "").split(" wins the ")[-1]
         print(f"  {label}: Kalshi={kg.team_probs}")
         if row["odds_api_avg_probs"]:
@@ -171,18 +237,29 @@ def scan_league(league_key: str) -> list[dict]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--leagues", default="nfl", help="comma-separated league keys, or 'all'")
+    ap.add_argument("--paper", action="store_true", help="also paper-trade any TRUSTED cross-venue signal (see cross_venue_trust.py)")
     args = ap.parse_args()
 
     load_dotenv()
     leagues = list(SPORTS) if args.leagues == "all" else [s.strip() for s in args.leagues.split(",")]
 
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    broker = None
+    already_filled: set[str] = set()
+    if args.paper:
+        broker = PaperBroker()
+        already_filled = _already_filled_tickers()
+        for venue_key in ("odds_api", "polymarket"):
+            trusted, reason = venue_trust(venue_key)
+            print(f"[trust check] {venue_key}: {'TRUSTED' if trusted else 'not trusted'} -- {reason}")
+
     all_rows = []
     for league_key in leagues:
         if league_key not in SPORTS:
             print(f"unknown league '{league_key}', skipping (known: {list(SPORTS)})")
             continue
-        rows = scan_league(league_key)
+        rows = scan_league(league_key, broker=broker, already_filled=already_filled)
         all_rows.extend(rows)
 
     with LOG_PATH.open("a", encoding="utf-8") as f:
@@ -190,6 +267,10 @@ def main() -> None:
             f.write(json.dumps(row) + "\n")
 
     print(f"\nlogged {len(all_rows)} cross-venue comparison(s) to {LOG_PATH}")
+
+    if broker is not None:
+        print(f"\npaper cash remaining: ${broker.cash_usd:.2f}")
+        print(f"open paper positions: {len(broker.positions)}")
 
     ranked = sorted(
         (r for r in all_rows if r["max_diff_vs_odds_api"] or r["max_diff_vs_polymarket"]),
