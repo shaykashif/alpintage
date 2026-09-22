@@ -67,6 +67,25 @@ if [ ! -f .env ]; then
   read -r
 fi
 
+# --- SELinux: let systemd actually read .env as an EnvironmentFile ---
+# On Oracle Linux (SELinux enforcing by default), a file under $HOME is
+# labeled user_home_t, which systemd's domain is not permitted to read even
+# though it's running as root -- root bypasses normal Unix permissions, not
+# SELinux. Without this, both services fail with "Failed to load
+# environment files: Permission denied" (confirmed live on a real deploy).
+# Relabeling as etc_t, the standard label for config files systemd reads
+# outside /etc itself, fixes it. A no-op if not on Oracle Linux, or if
+# .env is already outside $HOME.
+if [ "$OS_FAMILY" = "rhel" ]; then
+  if ! command -v semanage >/dev/null 2>&1; then
+    sudo dnf install -y policycoreutils-python-utils
+  fi
+  echo "Relabeling .env for SELinux (etc_t) so systemd can read it..."
+  sudo semanage fcontext -a -t etc_t "$REPO_DIR/.env" 2>/dev/null || \
+    sudo semanage fcontext -m -t etc_t "$REPO_DIR/.env"
+  sudo restorecon -v "$REPO_DIR/.env"
+fi
+
 # --- systemd services ---
 echo "Installing systemd services..."
 sed "s#/opt/alpintage#$REPO_DIR#g" deploy/kalshi-loop.service | sudo tee /etc/systemd/system/kalshi-loop.service >/dev/null

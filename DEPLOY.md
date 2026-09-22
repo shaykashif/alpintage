@@ -94,6 +94,16 @@ sudo systemctl disable kalshi-loop.service kalshi-dashboard.service
   to run comfortably on one, but if the loop's Odds API or Polymarket calls
   ever start timing out, check `journalctl -u kalshi-loop.service` first.
 - Oracle Linux ships SELinux in enforcing mode. Port 8080 isn't a
-  restricted port, so this is rarely an issue, but if the dashboard is
-  unreachable even after the firewall and OCI console steps are both done,
-  check `sudo ausearch -m avc -ts recent` for a denial.
+  restricted port, so that alone is rarely an issue, but there's a
+  confirmed real one: a `.env` under `$HOME` is labeled `user_home_t`,
+  which systemd's domain can't read even running as root (root bypasses
+  Unix permissions, not SELinux) -- both services fail to start at all
+  with "Failed to load environment files: Permission denied". `setup.sh`
+  now relabels `.env` as `etc_t` automatically on Oracle Linux to fix
+  this; if you ever see that error, `sudo ausearch -m avc -ts recent`
+  will show the denial, and the fix is:
+  ```bash
+  sudo semanage fcontext -a -t etc_t "$HOME/alpintage/.env"
+  sudo restorecon -v "$HOME/alpintage/.env"
+  sudo systemctl restart kalshi-loop.service kalshi-dashboard.service
+  ```
