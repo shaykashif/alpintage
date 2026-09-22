@@ -11,6 +11,10 @@ ExecStart=/opt/alpintage/.venv/bin/python scripts/run_loop.py --interval-min 30
 Restart=on-failure
 RestartSec=30
 EnvironmentFile=/opt/alpintage/.env
+# Without this, Python buffers stdout when it's not a TTY (always true
+# under systemd), so print() output can sit unflushed for a long time --
+# journalctl looks silent even when the process is healthy. Confirmed live.
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target

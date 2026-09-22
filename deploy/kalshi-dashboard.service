@@ -10,6 +10,7 @@ ExecStart=/opt/alpintage/.venv/bin/python scripts/dashboard_server.py --host 0.0
 Restart=on-failure
 RestartSec=15
 EnvironmentFile=/opt/alpintage/.env
+Environment=PYTHONUNBUFFERED=1
 
 [Install]
 WantedBy=multi-user.target
