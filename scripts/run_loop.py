@@ -1,15 +1,30 @@
-"""Run the scanner and the Jev collector on a repeating interval, for
-multi-day unattended paper testing. Nothing here sends a real order --
-run_scanner.py --paper is simulated, collect_predictions.py only logs.
+"""Run the scanner, the Jev collector, and (periodically) the cross-venue
+comparison on a repeating interval, for multi-day unattended paper testing.
+Nothing here sends a real order -- run_scanner.py --paper is simulated,
+collect_predictions.py and run_cross_venue_scanner.py only log.
 
 Usage:
     uv run python scripts/run_loop.py
     uv run python scripts/run_loop.py --interval-min 30 --collect-n 10
     uv run python scripts/run_loop.py --cycles 3   # test it, then stop
+    uv run python scripts/run_loop.py --cross-venue-every 24 --cross-venue-leagues nfl,nba
 
 Stop with Ctrl+C. Safe to interrupt and restart: collect_predictions.py
-skips tickers it already logged, and run_scanner.py (as of this version)
-skips paper-buying a ticker it already holds a logged fill on.
+skips tickers it already logged, run_scanner.py skips paper-buying a ticker
+it already holds a logged fill on, and the cross-venue cycle count just
+restarts from 0 (it re-runs sooner than scheduled after a restart, which is
+harmless -- it never re-logs a candidate whose game already settled, but it
+also doesn't dedupe by ticker the way the other two scripts do, so a
+restart-heavy deployment will produce some duplicate rows in
+cross_venue.jsonl. Not a correctness problem for the dashboard, which reads
+all rows each time, just a minor quota cost to know about).
+
+Cross-venue scanning costs real Odds API quota (~500/month free tier) and
+takes minutes, not seconds (a 5-league scan can take 2-3 minutes), so it
+runs far less often than the other two -- every --cross-venue-every cycles,
+not every cycle. Default (48 cycles at the default 30-min interval = once
+a day) keeps a 5-league scan comfortably under quota; tune both flags
+together if you change the interval.
 """
 from __future__ import annotations
 
@@ -24,13 +39,13 @@ ROOT = Path(__file__).resolve().parent.parent
 LOG_PATH = ROOT / "data" / "loop.log"
 
 
-def _run(cmd: list[str]) -> None:
+def _run(cmd: list[str], timeout: int = 120) -> None:
     ts = datetime.now(timezone.utc).isoformat()
     header = f"\n[{ts}] $ {' '.join(cmd)}"
     print(header)
     _append_log(header)
     try:
-        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout)
         out = result.stdout + result.stderr
     except Exception as exc:  # noqa: BLE001
         out = f"FAILED TO RUN: {exc}"
@@ -51,6 +66,8 @@ def main() -> None:
     ap.add_argument("--collect-n", type=int, default=10)
     ap.add_argument("--series-ticker", default=None, help="restrict Jev collection to one series")
     ap.add_argument("--cycles", type=int, default=0, help="stop after N cycles, 0 = run forever")
+    ap.add_argument("--cross-venue-every", type=int, default=48, help="run the cross-venue scan every N cycles (0 = never)")
+    ap.add_argument("--cross-venue-leagues", default="all", help="comma-separated league keys, or 'all'")
     args = ap.parse_args()
 
     python = sys.executable
@@ -69,6 +86,12 @@ def main() -> None:
 
             _run([python, "scripts/score_predictions.py"])
             _run([python, "scripts/score_paper_fills.py"])
+
+            if args.cross_venue_every and (cycle == 1 or cycle % args.cross_venue_every == 0):
+                _run(
+                    [python, "scripts/run_cross_venue_scanner.py", "--leagues", args.cross_venue_leagues],
+                    timeout=600,  # a full multi-league scan can take minutes, not seconds
+                )
 
             if args.cycles and cycle >= args.cycles:
                 print("reached --cycles limit, stopping")
