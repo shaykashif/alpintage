@@ -28,9 +28,13 @@ _STOPWORDS = {
 }
 
 MATCH_INSTRUCTIONS = (
-    "Do these two descriptions refer to the exact same real-world sports game "
-    "(the same two teams playing each other, on or around the same date)? "
-    "Answer based only on whether they describe the same matchup, not on any "
+    "Do these two descriptions refer to the exact same single real-world sports "
+    "game (the same two teams playing each other on the SAME calendar date)? "
+    "If the teams match but the dates clearly differ -- for example these could "
+    "be two different games of the same multi-game series or season series "
+    "between the same two teams, played on different days -- answer NO: they "
+    "are different games even though the matchup is the same. Answer based only "
+    "on whether they describe the same single game on the same date, not on any "
     "price or probability mentioned."
 )
 

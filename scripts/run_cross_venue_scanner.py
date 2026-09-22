@@ -2,17 +2,22 @@
 and de-vigged across every book that quoted the game) and Polymarket for the
 SAME real-world game, verified by asking Jev whether each candidate pair
 actually describes the same game (see event_match.py for why: the sources
-name teams inconsistently).
+name teams inconsistently). Jev's only job here is that event-identity
+check -- it never sets a price or a trade decision.
 
-Logging always happens. Paper-trading a divergence ("statistical
-arbitrage": Kalshi is mispriced relative to the cross-venue consensus, and
-will converge toward it) is GATED behind cross_venue_trust.py -- unlike the
-ladder/bracket checks in scanner.py, which are true arbitrage (mathematical
-guarantee), a cross-venue divergence is a hypothesis that needs to survive
-contact with real settled games (score_cross_venue.py) before anything
-sizes a bet on it. Until 30+ settled games show a venue's price beating
-Kalshi's own, this never places a paper trade -- it only logs. Never places
-a REAL order anywhere, on Kalshi or any other venue, regardless of trust.
+POC MODE (current default): --paper trades directly on any divergence that
+clears MIN_TRADE_EDGE net of fees, with no statistical validation gate.
+This is a deliberate scope choice for a quant-club proof of concept, not a
+claim that the signal is proven -- we have NOT confirmed Kalshi actually
+converges toward the sportsbook/Polymarket price, only that they sometimes
+disagree. See the project conversation history for the fuller discussion:
+divergence is not the same thing as edge. cross_venue_trust.py and
+score_cross_venue.py still exist and still work -- pass --require-trust to
+restore the stricter, evidence-gated behavior (needs 30+ settled games
+where a venue beats Kalshi's own Brier score before it trades on it).
+
+Still never places a REAL order anywhere, on Kalshi or any other venue,
+under any flag.
 
 Costs one Odds API call per league (cheap against the ~500/month free-tier
 quota) and real Jev calls (one per date-plausible candidate pair -- fine,
@@ -20,9 +25,8 @@ per the project owner, Jev calls are inexpensive).
 
 Usage:
     uv run python scripts/run_cross_venue_scanner.py
-    uv run python scripts/run_cross_venue_scanner.py --leagues nfl,nba,mlb,nhl,ncaaf
-    uv run python scripts/run_cross_venue_scanner.py --leagues all
-    uv run python scripts/run_cross_venue_scanner.py --paper   # also act on any trusted signal
+    uv run python scripts/run_cross_venue_scanner.py --leagues all --paper
+    uv run python scripts/run_cross_venue_scanner.py --paper --require-trust   # stricter mode
 """
 from __future__ import annotations
 
@@ -52,13 +56,29 @@ from run_scanner import _already_filled_tickers  # noqa: E402
 
 LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "cross_venue.jsonl"
 
-# Net-of-fee edge required before a TRUSTED cross-venue signal is worth
-# paper-trading. Conservative on purpose: this is a statistical-arbitrage
-# bet, not a guaranteed one, so it should need a bigger margin than a true
-# arb would to be worth the risk that the venues just disagree for reasons
-# that aren't about to resolve (thin liquidity, stale quotes, a real
-# resolution-rule mismatch).
-MIN_TRADE_EDGE = 0.03
+# Net-of-fee edge required before a cross-venue divergence is worth
+# paper-trading. This is a POC-appropriate bar (real divergences observed
+# so far mostly sit at 1-3%), not a validated edge threshold -- lower this
+# and trades happen more often; raise it and they happen less. It applies
+# whether or not --require-trust is set.
+MIN_TRADE_EDGE = 0.015
+
+# Sanity ceiling: an edge bigger than this is far more likely a matching
+# bug than real mispricing -- caught live, a same-team-different-day series
+# game got mis-paired and produced a fake 44.5-point "edge" that POC mode
+# then traded on before this existed. A liquid moneyline market disagreeing
+# with a de-vigged sportsbook consensus by more than this is not impossible,
+# but it should be looked at by a person, not auto-traded.
+MAX_PLAUSIBLE_EDGE = 0.20
+
+# How close two sources' game timestamps must be to even be considered as
+# candidates for the same game, before Jev makes the real call. Wide enough
+# to absorb timezone/kickoff-vs-market-close slop for ONE game, narrow
+# enough to not span into an adjacent day's game of the same season series
+# (the exact bug above) -- Jev's own instructions (event_match.py) are the
+# primary defense against that now, this is the secondary one.
+DATE_WINDOW_HOURS = 30
+
 TRADE_QTY = 1
 
 
@@ -118,21 +138,28 @@ def _max_divergence(kalshi_probs: dict, other_probs: dict) -> float | None:
     return max(diffs.values()) if diffs else None
 
 
-def _maybe_trade(kg, row: dict, broker: PaperBroker, already_filled: set[str]) -> None:
-    """Paper-buy YES on a Kalshi team ONLY if a venue is trusted
-    (venue_trust) AND the net-of-fee edge clears MIN_TRADE_EDGE. This is a
-    statistical-arbitrage bet (Kalshi converges toward the trusted venue's
-    price), not a guaranteed one -- see the module docstring for why that
-    distinction matters. Right now (0 settled games scored), venue_trust()
-    returns False for everything, so this is a no-op in practice until
-    score_cross_venue.py has real evidence."""
+def _maybe_trade(kg, row: dict, broker: PaperBroker, already_filled: set[str], require_trust: bool = False) -> None:
+    """Paper-buy YES on a Kalshi team if the net-of-fee edge against a
+    cross-venue price clears MIN_TRADE_EDGE. Jev's role ends at confirming
+    this is the same game (done earlier, in scan_league) -- it has no say
+    in this decision.
+
+    require_trust=False (the default, POC mode): trades on the edge alone.
+    require_trust=True: also requires cross_venue_trust.venue_trust() to
+    say this venue has beaten Kalshi's own Brier score on 30+ settled
+    games -- the stricter mode, currently a no-op in practice since 0 games
+    are scored yet."""
     for venue_key, probs_key in (("odds_api", "odds_api_avg_probs"), ("polymarket", "polymarket_probs")):
         venue_probs = row.get(probs_key)
         if not venue_probs:
             continue
-        trusted, reason = venue_trust(venue_key)
-        if not trusted:
-            continue
+
+        note = "POC mode (no statistical validation)"
+        if require_trust:
+            trusted, reason = venue_trust(venue_key)
+            if not trusted:
+                continue
+            note = f"trusted: {reason}"
 
         for k_team, o_team in best_team_assignment(kg.team_probs, venue_probs):
             ticker = kg.team_tickers.get(k_team)
@@ -141,15 +168,22 @@ def _maybe_trade(kg, row: dict, broker: PaperBroker, already_filled: set[str]) -
                 continue
             fee = float(taker_fee(TRADE_QTY, ask))
             edge = venue_probs[o_team] - ask - fee
+            if edge > MAX_PLAUSIBLE_EDGE:
+                print(
+                    f"  SKIPPING {ticker}: edge {edge:.3f} exceeds MAX_PLAUSIBLE_EDGE "
+                    f"({MAX_PLAUSIBLE_EDGE}) -- almost certainly a matching error, not "
+                    f"real mispricing. Not trading. Check this row in cross_venue.jsonl by hand."
+                )
+                continue
             if edge > MIN_TRADE_EDGE:
                 broker.buy(
                     ticker, "yes", ask, qty=TRADE_QTY,
-                    reason=f"cross-venue stat-arb: {venue_key} trusted ({reason}), edge={edge:.3f}",
+                    reason=f"cross-venue stat-arb: {venue_key} ({note}), edge={edge:.3f}",
                 )
                 already_filled.add(ticker)
 
 
-def scan_league(league_key: str, broker: PaperBroker | None = None, already_filled: set[str] | None = None) -> list[dict]:
+def scan_league(league_key: str, broker: PaperBroker | None = None, already_filled: set[str] | None = None, require_trust: bool = False) -> list[dict]:
     cfg = SPORTS[league_key]
     print(f"\n=== {cfg.label} ===")
 
@@ -170,7 +204,7 @@ def scan_league(league_key: str, broker: PaperBroker | None = None, already_fill
     for kg in kalshi_games:
         odds_match = None
         for e in odds_events:
-            if not dates_close(kg.scheduled_date, e.get("commence_time"), max_hours=48):
+            if not dates_close(kg.scheduled_date, e.get("commence_time"), max_hours=DATE_WINDOW_HOURS):
                 continue
             label = f"{e.get('away_team')} @ {e.get('home_team')}"
             candidate_text = f"{label}, kickoff {e.get('commence_time')}"
@@ -183,7 +217,7 @@ def scan_league(league_key: str, broker: PaperBroker | None = None, already_fill
 
         poly_match = None
         for pm in poly_markets:
-            if not dates_close(kg.scheduled_date, pm.get("endDate"), max_hours=48):
+            if not dates_close(kg.scheduled_date, pm.get("endDate"), max_hours=DATE_WINDOW_HOURS):
                 continue
             candidate_text = f"{pm.get('question')} (slug: {pm.get('slug')})"
             if not likely_same_game(kg.rules_text, candidate_text):
@@ -219,7 +253,7 @@ def scan_league(league_key: str, broker: PaperBroker | None = None, already_fill
         row["max_diff_vs_polymarket"] = _max_divergence(kg.team_probs, row["polymarket_probs"] or {})
 
         if broker is not None:
-            _maybe_trade(kg, row, broker, already_filled or set())
+            _maybe_trade(kg, row, broker, already_filled or set(), require_trust=require_trust)
 
         label = kg.rules_text.split(", then")[0].replace("If ", "").split(" wins the ")[-1]
         print(f"  {label}: Kalshi={kg.team_probs}")
@@ -237,7 +271,8 @@ def scan_league(league_key: str, broker: PaperBroker | None = None, already_fill
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--leagues", default="nfl", help="comma-separated league keys, or 'all'")
-    ap.add_argument("--paper", action="store_true", help="also paper-trade any TRUSTED cross-venue signal (see cross_venue_trust.py)")
+    ap.add_argument("--paper", action="store_true", help="paper-trade divergences that clear MIN_TRADE_EDGE (POC mode by default -- see module docstring)")
+    ap.add_argument("--require-trust", action="store_true", help="stricter mode: only trade a venue once cross_venue_trust.py says it has earned it")
     args = ap.parse_args()
 
     load_dotenv()
@@ -250,16 +285,19 @@ def main() -> None:
     if args.paper:
         broker = PaperBroker()
         already_filled = _already_filled_tickers()
-        for venue_key in ("odds_api", "polymarket"):
-            trusted, reason = venue_trust(venue_key)
-            print(f"[trust check] {venue_key}: {'TRUSTED' if trusted else 'not trusted'} -- {reason}")
+        if args.require_trust:
+            for venue_key in ("odds_api", "polymarket"):
+                trusted, reason = venue_trust(venue_key)
+                print(f"[trust check] {venue_key}: {'TRUSTED' if trusted else 'not trusted'} -- {reason}")
+        else:
+            print("[POC mode] trading on divergence alone (no statistical validation) -- pass --require-trust for the stricter gate")
 
     all_rows = []
     for league_key in leagues:
         if league_key not in SPORTS:
             print(f"unknown league '{league_key}', skipping (known: {list(SPORTS)})")
             continue
-        rows = scan_league(league_key, broker=broker, already_filled=already_filled)
+        rows = scan_league(league_key, broker=broker, already_filled=already_filled, require_trust=args.require_trust)
         all_rows.extend(rows)
 
     with LOG_PATH.open("a", encoding="utf-8") as f:
