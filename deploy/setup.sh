@@ -84,6 +84,27 @@ if [ "$OS_FAMILY" = "rhel" ]; then
   sudo semanage fcontext -a -t etc_t "$REPO_DIR/.env" 2>/dev/null || \
     sudo semanage fcontext -m -t etc_t "$REPO_DIR/.env"
   sudo restorecon -v "$REPO_DIR/.env"
+
+  # --- SELinux: let systemd actually EXECUTE the Python interpreter ---
+  # A second, separate denial from the one above: .venv/bin/python is a
+  # SYMLINK uv creates pointing at its own managed Python build under
+  # ~/.local/share/uv/python/... -- also inside $HOME, so also user_home_t.
+  # SELinux checks the symlink's TARGET when enforcing execute permission,
+  # so relabeling only .venv/bin does nothing; the real interpreter needs
+  # it too. Without this, the service fails with status=203/EXEC (confirmed
+  # live). bin_t is the standard label used throughout /usr/bin, /bin, etc.
+  # This affects every uv-managed systemd service on Oracle Linux, not just
+  # this project.
+  UV_PYTHON_DIR="$HOME/.local/share/uv/python"
+  if [ -d "$UV_PYTHON_DIR" ]; then
+    echo "Relabeling uv's managed Python install for SELinux (bin_t)..."
+    sudo semanage fcontext -a -t bin_t "$UV_PYTHON_DIR(/.*)?" 2>/dev/null || \
+      sudo semanage fcontext -m -t bin_t "$UV_PYTHON_DIR(/.*)?"
+    sudo restorecon -R -v "$UV_PYTHON_DIR"
+  fi
+  sudo semanage fcontext -a -t bin_t "$REPO_DIR/.venv/bin(/.*)?" 2>/dev/null || \
+    sudo semanage fcontext -m -t bin_t "$REPO_DIR/.venv/bin(/.*)?"
+  sudo restorecon -R -v "$REPO_DIR/.venv"
 fi
 
 # --- systemd services ---

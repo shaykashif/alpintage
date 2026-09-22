@@ -93,17 +93,27 @@ sudo systemctl disable kalshi-loop.service kalshi-dashboard.service
 - Free-tier Oracle instances are small; this project is lightweight enough
   to run comfortably on one, but if the loop's Odds API or Polymarket calls
   ever start timing out, check `journalctl -u kalshi-loop.service` first.
-- Oracle Linux ships SELinux in enforcing mode. Port 8080 isn't a
-  restricted port, so that alone is rarely an issue, but there's a
-  confirmed real one: a `.env` under `$HOME` is labeled `user_home_t`,
-  which systemd's domain can't read even running as root (root bypasses
-  Unix permissions, not SELinux) -- both services fail to start at all
-  with "Failed to load environment files: Permission denied". `setup.sh`
-  now relabels `.env` as `etc_t` automatically on Oracle Linux to fix
-  this; if you ever see that error, `sudo ausearch -m avc -ts recent`
-  will show the denial, and the fix is:
+- Oracle Linux ships SELinux in enforcing mode, and deploying under `$HOME`
+  (as these instructions do) hits it twice -- both confirmed live, both
+  fixed automatically by `setup.sh` now:
+  1. **`.env` unreadable**: a file under `$HOME` is labeled `user_home_t`,
+     which systemd's domain can't read even running as root (root bypasses
+     Unix permissions, not SELinux). Both services fail to start with
+     "Failed to load environment files: Permission denied".
+  2. **Python interpreter unexecutable**: `.venv/bin/python` is a symlink
+     uv creates pointing at its own managed Python build under
+     `~/.local/share/uv/python/...` -- also `$HOME`, also `user_home_t`.
+     SELinux checks the symlink's *target* for execute permission, so this
+     is a separate denial from #1. Fails with `status=203/EXEC`.
+
+  If you ever see either error, `sudo ausearch -m avc -ts recent` shows
+  the denial. Manual fix if you're not re-running `setup.sh`:
   ```bash
   sudo semanage fcontext -a -t etc_t "$HOME/alpintage/.env"
   sudo restorecon -v "$HOME/alpintage/.env"
+  sudo semanage fcontext -a -t bin_t "$HOME/.local/share/uv/python(/.*)?"
+  sudo restorecon -R -v "$HOME/.local/share/uv/python"
+  sudo semanage fcontext -a -t bin_t "$HOME/alpintage/.venv/bin(/.*)?"
+  sudo restorecon -R -v "$HOME/alpintage/.venv"
   sudo systemctl restart kalshi-loop.service kalshi-dashboard.service
   ```
