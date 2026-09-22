@@ -7,14 +7,11 @@ order, on Kalshi or anywhere else. Run these commands yourself over SSH; I
 ## 1. SSH in and clone the repo
 
 ```bash
-ssh ubuntu@<your-instance-public-ip>
+ssh opc@<your-instance-public-ip>          # Oracle Linux default user
+# ssh ubuntu@<your-instance-public-ip>     # Ubuntu default user, if that's what you picked
 git clone https://github.com/shaykashif/alpintage.git
 cd alpintage
 ```
-
-(If your instance user isn't `ubuntu`, or the OS is Oracle Linux instead of
-Ubuntu, everything still works -- just swap `apt`-based steps for `dnf` where
-`deploy/setup.sh` uses them.)
 
 ## 2. Run the setup script
 
@@ -22,9 +19,12 @@ Ubuntu, everything still works -- just swap `apt`-based steps for `dnf` where
 bash deploy/setup.sh
 ```
 
-This installs `uv`, syncs the Python environment, walks you through creating
-`.env` (you'll need a `TYPESAFE_API_KEY` and an `ODDS_API_KEY`), installs two
-systemd services, and opens port 8080 in the instance's own firewall.
+It detects Oracle Linux (`dnf` + `firewalld`) vs Ubuntu (`apt` + `ufw`)
+automatically. It installs `uv`, syncs the Python environment, walks you
+through creating `.env` (you'll need a `TYPESAFE_API_KEY` and an
+`ODDS_API_KEY`), installs two systemd services, and opens port 8080 in the
+instance's own firewall. `uv` and this project both run fine on Ampere/ARM
+(aarch64) -- no special steps needed for the Always Free Ampere shape.
 
 ## 3. Open the port in Oracle Cloud's console (the part the script can't do)
 
@@ -93,3 +93,7 @@ sudo systemctl disable kalshi-loop.service kalshi-dashboard.service
 - Free-tier Oracle instances are small; this project is lightweight enough
   to run comfortably on one, but if the loop's Odds API or Polymarket calls
   ever start timing out, check `journalctl -u kalshi-loop.service` first.
+- Oracle Linux ships SELinux in enforcing mode. Port 8080 isn't a
+  restricted port, so this is rarely an issue, but if the dashboard is
+  unreachable even after the firewall and OCI console steps are both done,
+  check `sudo ausearch -m avc -ts recent` for a denial.
