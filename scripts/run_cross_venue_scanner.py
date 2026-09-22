@@ -183,7 +183,7 @@ def _maybe_trade(kg, row: dict, broker: PaperBroker, already_filled: set[str], r
                 already_filled.add(ticker)
 
 
-def scan_league(league_key: str, broker: PaperBroker | None = None, already_filled: set[str] | None = None, require_trust: bool = False, already_logged: set[str] | None = None) -> list[dict]:
+def scan_league(league_key: str, broker: PaperBroker | None = None, already_filled: set[str] | None = None, require_trust: bool = False) -> list[dict]:
     cfg = SPORTS[league_key]
     print(f"\n=== {cfg.label} ===")
 
@@ -200,12 +200,18 @@ def scan_league(league_key: str, broker: PaperBroker | None = None, already_fill
     poly_markets = moneyline_markets(cfg.poly_slug_prefix)
     print(f"Polymarket: {len(poly_markets)} moneyline markets")
 
-    already_logged = already_logged or set()
     rows = []
     for kg in kalshi_games:
-        if kg.event_ticker in already_logged:
-            continue  # already have a comparison for this game -- don't re-log it (or re-spend Jev calls on it) every cycle
-
+        # Deliberately NOT skipping games already in cross_venue.jsonl: a
+        # game is re-evaluated with fresh prices every cycle on purpose,
+        # since a real divergence can develop closer to game time, not
+        # necessarily at first sighting. Skipping re-evaluation here was
+        # an earlier over-correction for the rate-limit bug -- that bug was
+        # actually in score_cross_venue.py's per-ROW (not per-ticker) Kalshi
+        # calls with no pacing, which is fixed there independently of this.
+        # This does mean cross_venue.jsonl grows every cycle per game seen,
+        # by design -- cheap to store, and already_filled (below) still
+        # prevents buying the same ticker twice.
         odds_match = None
         for e in odds_events:
             if not dates_close(kg.scheduled_date, e.get("commence_time"), max_hours=DATE_WINDOW_HOURS):
@@ -272,24 +278,6 @@ def scan_league(league_key: str, broker: PaperBroker | None = None, already_fill
     return rows
 
 
-def _already_logged_tickers() -> set[str]:
-    """Every kalshi_event_ticker already in cross_venue.jsonl, from any past
-    run. Prevents re-logging (and re-spending Jev calls on) the same still-
-    open game every scan cycle -- confirmed live: this was the main driver
-    of cross_venue.jsonl's growth, which in turn made score_cross_venue.py
-    hit Kalshi's rate limit (see that file's own fix for the other half)."""
-    if not LOG_PATH.exists():
-        return set()
-    tickers = set()
-    with LOG_PATH.open(encoding="utf-8") as f:
-        for line in f:
-            try:
-                tickers.add(json.loads(line)["kalshi_event_ticker"])
-            except (json.JSONDecodeError, KeyError):
-                continue
-    return tickers
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--leagues", default="nfl", help="comma-separated league keys, or 'all'")
@@ -314,15 +302,12 @@ def main() -> None:
         else:
             print("[POC mode] trading on divergence alone (no statistical validation) -- pass --require-trust for the stricter gate")
 
-    already_logged = _already_logged_tickers()
-    print(f"{len(already_logged)} games already logged previously -- skipping those")
-
     all_rows = []
     for league_key in leagues:
         if league_key not in SPORTS:
             print(f"unknown league '{league_key}', skipping (known: {list(SPORTS)})")
             continue
-        rows = scan_league(league_key, broker=broker, already_filled=already_filled, require_trust=args.require_trust, already_logged=already_logged)
+        rows = scan_league(league_key, broker=broker, already_filled=already_filled, require_trust=args.require_trust)
         all_rows.extend(rows)
 
     with LOG_PATH.open("a", encoding="utf-8") as f:
