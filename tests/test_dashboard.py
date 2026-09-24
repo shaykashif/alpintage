@@ -63,3 +63,20 @@ def test_api_live_reports_running_only_when_fresh(tmp_path, monkeypatch):
         (tmp_path / "relation_live.json").write_text(json.dumps({"generated_at": ts, "rows": [row]}))
         data = client.get("/api/live").get_json()
         assert data["running"] is running and data["rows"] == [row]
+
+
+def test_duplicate_violations_from_scan_and_watcher_count_once(tmp_path, monkeypatch):
+    import json
+
+    from kalshi_engine import dashboard_data
+
+    monkeypatch.setattr(dashboard_data, "DATA_DIR", tmp_path)
+    legs = [{"ticker": "PM-a", "side": "no", "price": 0.27}, {"ticker": "PM-b", "side": "no", "price": 0.36}]
+    rows = [
+        {"kind": "mutually_exclusive", "legs": legs, "logged_at": "2026-09-24T05:00:00", "source": "scan"},
+        {"kind": "mutually_exclusive", "legs": legs, "logged_at": "2026-09-24T05:00:02", "source": "watch"},
+        {"kind": "mutually_exclusive", "legs": [dict(legs[0], price=0.30), legs[1]], "logged_at": "2026-09-24T05:01:00"},
+    ]
+    (tmp_path / "relation_arbs.jsonl").write_text("\n".join(json.dumps(r) for r in rows))
+    summary = dashboard_data.relation_summary()
+    assert summary["opportunities_logged"] == 2 and len(summary["recent"]) == 2

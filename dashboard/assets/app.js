@@ -231,8 +231,71 @@ function curve(d) {
 }
 
 // ---- renderers --------------------------------------------------------------------
+/** Nothing traded yet: every PnL figure would read $0.00, so the page leads
+ *  with the comparisons instead (hero numbers + section order). The first
+ *  trade switches back to the PnL layout. */
+const cents = (x) => Math.round((x ?? 0) * 100);
+function bookEmpty(b) {
+  return !b.open && !b.closed && !cents(b.total) && !cents(b.realized) && !cents(b.unrealized) && !cents(b.capital);
+}
+function comparisonCounts(d) {
+  const c = (d.relations || {}).comparisons || {};
+  const n = c.counts || {};
+  const markets = Object.values(c.universe || {}).flatMap((v) => Object.values(v)).reduce((a, x) => a + x, 0);
+  return {
+    live: c.live_pairs ?? 0,
+    confirmed: (n.violation || 0) + (n.consistent || 0) + (n.unpriced || 0),
+    cross: n.cross_venue || 0,
+    markets,
+  };
+}
+
+let heroMode = null;
+function setHeroMode(mode) {
+  if (mode === heroMode) return;
+  heroMode = mode;
+  const labels = mode === "comparisons"
+    ? ["PAIRS COMPARED", "Relations confirmed", "Kalshi × Polymarket", "Markets in scope"]
+    : ["TOTAL PNL", "Realized", "Unrealized", "Capital at risk"];
+  $("lcd-unit").textContent = labels[0];
+  labels.slice(1).forEach((t, i) => ($(`h-k${i}`).textContent = t));
+  $("pnl-sign").hidden = mode === "comparisons";
+  $("pnl-lcd").setAttribute("aria-label", mode === "comparisons" ? "market pairs compared" : "total PnL");
+  lcd.decimals = mode === "comparisons" ? 0 : 2;
+  ["lcd", "h-realized", "h-unrealized", "h-capital"].forEach((k) => shown.delete(k)); // don't tween across units
+  // Section order: comparisons first while there's no book to show.
+  const main = $("top"), cmp = $("comparisons");
+  if (mode === "comparisons") main.insertBefore(cmp, $("book"));
+  else main.insertBefore(cmp, $("positions"));
+  main.querySelectorAll(":scope > .section .section-index").forEach((el, i) => (el.textContent = String(i + 1).padStart(2, "0")));
+}
+
 function renderHero(d) {
   const b = book(d), rel = d.relations || {};
+  if (bookEmpty(b)) {
+    setHeroMode("comparisons");
+    const c = comparisonCounts(d);
+    const from = shown.get("lcd") ?? 0;
+    shown.set("lcd", c.live);
+    if (reduce) lcd.render(c.live);
+    else { const o = { v: from }; animate(o, { v: c.live, duration: 1400, ease: "outExpo", onUpdate: () => lcd.render(Math.round(o.v)) }); }
+    const int = (x) => Math.round(x ?? 0).toLocaleString();
+    countTo($("h-realized"), c.confirmed, int);
+    countTo($("h-unrealized"), c.cross, int);
+    countTo($("h-capital"), c.markets, int);
+    ["h-realized", "h-unrealized"].forEach((id) => ($(id).className = "v"));
+  } else {
+    setHeroMode("pnl");
+    renderPnlHero(b);
+  }
+  $("hero-foot").innerHTML =
+    `<span><b>${(rel.pairs_judged ?? 0).toLocaleString()}</b> market pairs judged</span>` +
+    `<span><b>${(rel.opportunities_logged ?? 0).toLocaleString()}</b> violations priced</span>` +
+    `<span><b>${rel.traded ?? 0}</b> paper-traded</span>` +
+    `<span><b>${b.open}</b> open positions</span>`;
+}
+
+function renderPnlHero(b) {
   const sign = $("pnl-sign");
   sign.textContent = b.total > 0 ? "+" : b.total < 0 ? MINUS : "±";
   sign.className = "lcd-sign num " + signClass(b.total);
@@ -246,12 +309,6 @@ function renderHero(d) {
   countTo($("h-capital"), b.capital, (x) => usd(x, false));
   $("h-realized").className = "v " + signClass(b.realized);
   $("h-unrealized").className = "v " + signClass(b.unrealized);
-
-  $("hero-foot").innerHTML =
-    `<span><b>${(rel.pairs_judged ?? 0).toLocaleString()}</b> market pairs judged</span>` +
-    `<span><b>${(rel.opportunities_logged ?? 0).toLocaleString()}</b> violations priced</span>` +
-    `<span><b>${rel.traded ?? 0}</b> paper-traded</span>` +
-    `<span><b>${b.open}</b> open positions</span>`;
 }
 
 function renderBook(d) {

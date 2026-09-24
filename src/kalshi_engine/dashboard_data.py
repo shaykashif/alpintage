@@ -188,11 +188,25 @@ def paper_trading_summary(recent_n: int = 100) -> dict:
     }
 
 
+def _dedupe_arbs(arbs: list[dict]) -> list[dict]:
+    """The scanner and the 3-second watcher can both log the same violation
+    (same legs, same prices). Count and show it once: the traded copy if
+    either traded, else the latest."""
+    out: dict[tuple, dict] = {}
+    for a in arbs:
+        key = (a.get("kind"), tuple((l.get("ticker"), l.get("side"), l.get("price")) for l in a.get("legs", [])))
+        prev = out.get(key)
+        if prev is None or (a.get("traded") and not prev.get("traded")) or \
+                (a.get("traded") == prev.get("traded") and (a.get("logged_at") or "") > (prev.get("logged_at") or "")):
+            out[key] = a
+    return list(out.values())
+
+
 def relation_summary(recent_n: int = 25) -> dict:
     """What the relationship-arb scanner has found: Jev-judged pairs (the
     verdict cache) and priced opportunities (tradeable or not)."""
     verdicts = _load_jsonl(DATA_DIR / "relations_cache.jsonl")
-    arbs = _load_jsonl(DATA_DIR / "relation_arbs.jsonl")
+    arbs = _dedupe_arbs(_load_jsonl(DATA_DIR / "relation_arbs.jsonl"))
     # Latest scan's judged pairs (violations or not), written by
     # run_relation_scanner.py -- already bounded in size there.
     comparisons = None

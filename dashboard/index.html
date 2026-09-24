@@ -84,12 +84,12 @@
         <div class="lcd-wrap">
           <span class="lcd-sign num" id="pnl-sign">+</span>
           <span class="lcd" id="pnl-lcd" role="img" aria-label="total PnL"></span>
-          <span class="lcd-unit">TOTAL PNL</span>
+          <span class="lcd-unit" id="lcd-unit">TOTAL PNL</span>
         </div>
         <div class="hero-stats">
-          <div class="kv"><div class="k">Realized</div><div class="v" id="h-realized">--</div></div>
-          <div class="kv"><div class="k">Unrealized</div><div class="v" id="h-unrealized">--</div></div>
-          <div class="kv"><div class="k">Capital at risk</div><div class="v" id="h-capital">--</div></div>
+          <div class="kv"><div class="k" id="h-k0">Realized</div><div class="v" id="h-realized">--</div></div>
+          <div class="kv"><div class="k" id="h-k1">Unrealized</div><div class="v" id="h-unrealized">--</div></div>
+          <div class="kv"><div class="k" id="h-k2">Capital at risk</div><div class="v" id="h-capital">--</div></div>
         </div>
         <div class="hero-foot" id="hero-foot"></div>
       </div>
@@ -173,6 +173,6 @@
   </footer>
 </div>
 
-<script type="module" src="/assets/app.js?v=10"></script>
+<script type="module" src="/assets/app.js?v=11"></script>
 </body>
 </html>
