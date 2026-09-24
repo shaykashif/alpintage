@@ -166,6 +166,7 @@ def execute(arb: relations.Arb, broker: PaperBroker, held: set[str], verdict: di
             leg.contract.ticker, leg.side, leg.price, qty=arb.qty, fee_usd=fee,
             reason=f"relation arb ({arb.kind}), edge={arb.edge_per_set:.3f}/set",
             strategy=STRATEGY, venue=leg.contract.venue, relation=arb.kind, arb_group=group,
+            payout_per_set=arb.payout_per_set,
             edge=arb.edge_per_set, jev_probs=verdict["probs"] if verdict else None,
         )
         held.add(leg.contract.ticker)

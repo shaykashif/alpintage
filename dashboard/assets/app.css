@@ -198,6 +198,9 @@ td.mkt .t { color: var(--ink); }
 td.mkt .m { margin-top: 3px; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
 td.rel { white-space: nowrap; }
 td.rel .p { display: block; font-size: 11px; color: var(--ink-3); margin-top: 2px; }
+tr.set-row td { border-top: 1px solid var(--rule-strong); }
+tr.leg-row td:first-child { padding-left: 28px; }
+tr.leg-row td { color: var(--ink-2); }
 .tag.muted { color: var(--ink-3); border-color: var(--rule); }
 .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--good); margin-right: 5px; vertical-align: 1px; }
 td .why { display: block; margin-top: 2px; font-size: 10.5px; color: var(--ink-3); white-space: normal; max-width: 180px; margin-left: auto; }

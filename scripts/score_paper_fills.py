@@ -10,9 +10,15 @@ fee). Writes:
 
 Positions fully closed by an exit need no API call; only still-held
 tickers are fetched (paced, to stay clear of Kalshi's 429s). Polymarket
-legs of relation arbs ("PM-<slug>") are fetched from Polymarket instead;
-their mark uses Kalshi's fee formula for the exit fee, a close-enough
-approximation for a paper mark.
+legs of relation arbs ("PM-<slug>") are fetched from Polymarket instead,
+and charged Polymarket's own taker fee on exit.
+
+Relation-arb legs bought together (same arb_group) are valued as ONE
+hedged set, not as independent bets: the set is worth the larger of its
+guaranteed payout at resolution (if the relation holds) and what selling
+every leg now would fetch. Marking each leg at its own bid charged the
+full bid-ask spread on every leg, so a hedged pair in a thin market read
+as a loss even though it is locked to pay out at least its payout.
 
 Usage:
     uv run python scripts/score_paper_fills.py
@@ -58,6 +64,19 @@ def mark_price(market: dict, side: str) -> float | None:
     return round(1 - float(ask), 4) if ask is not None else None
 
 
+# Guaranteed payout per set when a fill row predates payout_per_set: every
+# two-leg relation pays >= $1; a mutually-exclusive event set of n NOs pays n - 1.
+RELATION_PAYOUT = {"a_implies_b": 1.0, "b_implies_a": 1.0, "mutually_exclusive": 1.0, "exhaustive": 1.0}
+
+
+def exit_fee(market: dict, qty: float, price: float) -> float:
+    """Taker fee to sell at `price`: Polymarket's schedule when the market
+    carries one (polymarket_as_kalshi_shape), else Kalshi's formula."""
+    if "fee_rate" in market:
+        return round(market["fee_rate"] * qty * (price * (1 - price)) ** market.get("fee_exponent", 1.0), 4)
+    return float(taker_fee(qty, price))
+
+
 def score_position(pos: ledger.Position, market: dict | None) -> dict:
     """One position's row for the summary. `market` is None when the
     position was fully exited (no fetch needed) or the fetch failed."""
@@ -68,6 +87,7 @@ def score_position(pos: ledger.Position, market: dict | None) -> dict:
         "cost": round(pos.cost_usd, 4), "avg_cost": round(pos.avg_cost, 4),
         "realized_pnl": round(pos.realized_pnl_usd, 4), "unrealized_pnl": 0.0,
         "opened_at": pos.first_ts,
+        "arb_group": pos.meta.get("arb_group"),
     }
     if pos.qty_open <= 0:
         row["status"] = "exited"
@@ -89,14 +109,85 @@ def score_position(pos: ledger.Position, market: dict | None) -> dict:
     row["status"] = "open"
     row["mark"] = mark
     if mark is not None and mark > 0:
-        liquidation = mark * pos.qty_open - float(taker_fee(pos.qty_open, mark))
-        row["unrealized_pnl"] = round(liquidation - pos.open_cost_usd, 4)
+        liquidation = mark * pos.qty_open - exit_fee(market, pos.qty_open, mark)
     else:
-        row["unrealized_pnl"] = round(-pos.open_cost_usd, 4)  # no bid: worth nothing until settlement
+        liquidation = 0.0  # no bid: worth nothing until settlement
+    row["liquidation"] = round(liquidation, 4)
+    row["open_cost"] = round(pos.open_cost_usd, 4)
+    row["unrealized_pnl"] = round(liquidation - pos.open_cost_usd, 4)
     return row
 
 
-def summarize(rows: list[dict], generated_at: str) -> dict:
+def payout_per_set(pos: ledger.Position, n_legs: int) -> float | None:
+    stored = pos.meta.get("payout_per_set")
+    if stored is not None:
+        return float(stored)
+    relation = pos.meta.get("relation")
+    if relation == "me_event_overround":
+        return float(n_legs - 1)
+    return RELATION_PAYOUT.get(relation)
+
+
+def mark_arb_sets(rows: list[dict], positions: dict[str, ledger.Position]) -> list[dict]:
+    """Re-value open relation-arb legs as hedged sets (see module doc).
+
+    A set qualifies while every leg is still held in full -- a leg partly or
+    wholly sold breaks the hedge, and those legs keep their own per-leg mark.
+    Legs that already settled count toward the guarantee: whatever they paid
+    is subtracted from what the still-open legs must pay. Each open leg's
+    `unrealized_pnl` becomes its cost-weighted share of the set's, so book
+    totals stay a plain sum over rows; the per-leg figure is kept as
+    `leg_unrealized_pnl`. Returns one summary row per set."""
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        if r.get("arb_group"):
+            groups.setdefault(r["arb_group"], []).append(r)
+
+    sets = []
+    for group, legs in groups.items():
+        open_legs = [r for r in legs if r["status"] in ("open", "unknown")]
+        if not open_legs or any(r["status"] == "exited" or r["qty_open"] != r["qty_bought"] for r in legs):
+            continue
+        qty = legs[0]["qty_bought"]
+        per_set = payout_per_set(positions[legs[0]["ticker"]], len(legs))
+        if per_set is None or any(r["qty_bought"] != qty for r in legs):
+            continue
+
+        settled_paid = sum(r.get("payout", 0.0) for r in legs if r["status"] == "settled")
+        guaranteed = max(0.0, per_set * qty - settled_paid)
+        open_cost = sum(positions[r["ticker"]].open_cost_usd for r in open_legs)
+        # A leg with no fetched market has no sale value; the guarantee
+        # doesn't depend on prices, so it still holds.
+        priced = all(r["status"] == "open" for r in open_legs)
+        liquidation = sum(r["liquidation"] for r in open_legs) if priced else None
+        value = max(guaranteed, liquidation) if liquidation is not None else guaranteed
+        unrealized = value - open_cost
+
+        for r in open_legs:
+            share = positions[r["ticker"]].open_cost_usd / open_cost if open_cost else 1 / len(open_legs)
+            r["leg_unrealized_pnl"] = r["unrealized_pnl"]
+            r["unrealized_pnl"] = round(unrealized * share, 4)
+            if r["status"] == "unknown":
+                r["status"] = "open"  # valued through its set
+
+        sets.append({
+            "arb_group": group,
+            "relation": positions[legs[0]["ticker"]].meta.get("relation"),
+            "tickers": [r["ticker"] for r in legs],
+            "qty": qty,
+            "open_cost": round(open_cost, 4),
+            "guaranteed_payout": round(guaranteed, 4),
+            "liquidation": round(liquidation, 4) if liquidation is not None else None,
+            "value": round(value, 4),
+            "unrealized_pnl": round(unrealized, 4),
+            # Lost if the relation turns out wrong and every open leg expires worthless.
+            "at_risk": round(open_cost, 4),
+            "opened_at": min((r["opened_at"] for r in legs if r["opened_at"]), default=None),
+        })
+    return sets
+
+
+def summarize(rows: list[dict], generated_at: str, arb_sets: list[dict] | None = None) -> dict:
     """Aggregate per-position rows into book totals and a per-strategy split."""
     def totals(subset: list[dict]) -> dict:
         realized = sum(r["realized_pnl"] for r in subset)
@@ -125,6 +216,8 @@ def summarize(rows: list[dict], generated_at: str) -> dict:
         "net_pnl": book["realized_pnl"],
         "by_strategy": {s: totals([r for r in rows if r["strategy"] == s]) for s in sorted({r["strategy"] for r in rows})},
         "positions": rows,
+        "arb_sets": arb_sets or [],
+        "relation_at_risk": round(sum(x["at_risk"] for x in arb_sets or []), 2),
     }
 
 
@@ -144,12 +237,16 @@ def main() -> None:
             except Exception as exc:  # noqa: BLE001
                 print(f"  {ticker}: could not fetch ({exc})")
             time.sleep(REQUEST_PACING_S)
-        row = score_position(pos, market)
-        rows.append(row)
-        pnl = row["realized_pnl"] + row["unrealized_pnl"]
-        print(f"  [{row['strategy']}] {ticker}: {row['status']} qty_open={row['qty_open']:g} cost=${row['cost']:.2f} pnl=${pnl:+.2f}")
+        rows.append(score_position(pos, market))
 
-    summary = summarize(rows, generated_at)
+    arb_sets = mark_arb_sets(rows, positions)
+    for row in rows:
+        pnl = row["realized_pnl"] + row["unrealized_pnl"]
+        print(f"  [{row['strategy']}] {row['ticker']}: {row['status']} qty_open={row['qty_open']:g} cost=${row['cost']:.2f} pnl=${pnl:+.2f}")
+    for x in arb_sets:
+        print(f"  set {x['arb_group']}: value ${x['value']:.2f} (guaranteed ${x['guaranteed_payout']:.2f}) pnl=${x['unrealized_pnl']:+.2f}")
+
+    summary = summarize(rows, generated_at, arb_sets)
     print(
         f"\n{summary['open_count']} open, {summary['closed_count']} closed "
         f"({summary['wins']} winners) -- realized ${summary['realized_pnl']:+.2f}, "

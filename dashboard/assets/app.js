@@ -57,8 +57,8 @@ function countTo(el, value, fmt, { duration = 900 } = {}) {
 }
 
 // ---- first-load draw-in: every box's rules are traced as if drawn by hand,
-// then its contents fade in. Each [data-reveal] group draws once, when it
-// first scrolls into view. Strokes sit exactly on the real rules (1px gaps
+// then its contents fade in. Every [data-reveal] group draws once, all on
+// first load (top to bottom, lightly staggered), not as each scrolls in. Strokes sit exactly on the real rules (1px gaps
 // between cells, outer borders, section underlines), which replace them
 // when done. Web Animations API, so it doesn't depend on anime.js loading.
 const DRAW_MS = 750, DRAW_STAGGER = 45, FADE_MS = 450;
@@ -87,7 +87,7 @@ function drawPaths(group) {
   group.querySelectorAll(":scope > *, .stats-row > *").forEach((el) => rect(el, 0.5));
   return paths;
 }
-function drawGroup(group) {
+function drawGroup(group, delay = 0) {
   const g = group.getBoundingClientRect();
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.classList.add("draw-svg");
@@ -102,35 +102,26 @@ function drawGroup(group) {
     path.setAttribute("stroke-dashoffset", "1");
     if (p.ink) path.classList.add("ink");
     svg.appendChild(path);
-    anims.push(path.animate({ strokeDashoffset: [1, 0] }, { duration: DRAW_MS, delay: Math.min(i, 14) * DRAW_STAGGER, easing: "cubic-bezier(.65,0,.35,1)", fill: "forwards" }));
+    anims.push(path.animate({ strokeDashoffset: [1, 0] }, { duration: DRAW_MS, delay: delay + Math.min(i, 14) * DRAW_STAGGER, easing: "cubic-bezier(.65,0,.35,1)", fill: "forwards" }));
   });
   document.body.appendChild(svg);
   const lineMs = DRAW_MS + Math.min(anims.length - 1, 14) * DRAW_STAGGER;
   const content = group.querySelectorAll(".section-head > *, .hero > *, .cell > *, .stats-row > * > *");
   const targets = group.matches(".section-head, .hero") ? group.children : content;
-  const fades = [...targets].map((el, i) => el.animate({ opacity: [0, 1] }, { duration: FADE_MS, delay: lineMs * 0.55 + Math.min(i, 10) * 30, fill: "forwards" }));
+  const fades = [...targets].map((el, i) => el.animate({ opacity: [0, 1] }, { duration: FADE_MS, delay: delay + lineMs * 0.55 + Math.min(i, 10) * 30, fill: "forwards" }));
   Promise.all([...anims, ...fades].map((a) => a.finished)).then(() => {
     group.classList.add("drawn"); // real rules and contents take over, at the same pixels
     svg.remove();
     fades.forEach((a) => a.cancel());
   });
 }
+const GROUP_STAGGER = 70;
 function revealOnce() {
   if (window.__revealed) return;
   window.__revealed = true; // tells index.html's fallback not to un-hide everything
   const groups = document.querySelectorAll("[data-reveal]");
-  if (reduce || !("IntersectionObserver" in window)) { groups.forEach((g) => g.classList.add("drawn")); return; }
-  const io = new IntersectionObserver((entries) => entries.forEach((e) => {
-    if (!e.isIntersecting) return;
-    io.unobserve(e.target);
-    drawGroup(e.target);
-  }), { threshold: 0.12 });
-  groups.forEach((g) => io.observe(g));
-  // Jumped past without it ever entering view (End key, fast scroll): show it, undrawn.
-  const skipPassed = () => groups.forEach((g) => {
-    if (!g.classList.contains("drawn") && g.getBoundingClientRect().bottom < 0) { io.unobserve(g); g.classList.add("drawn"); }
-  });
-  addEventListener("scroll", skipPassed, { passive: true });
+  if (reduce) { groups.forEach((g) => g.classList.add("drawn")); return; }
+  groups.forEach((g, i) => drawGroup(g, i * GROUP_STAGGER));
 }
 
 const seenRows = new WeakSet();
@@ -210,6 +201,7 @@ function book(d) {
     total: t.total_pnl ?? 0, realized: t.realized_pnl ?? 0, unrealized: t.unrealized_pnl ?? 0, capital: t.open_cost ?? 0,
     open: t.open_count ?? 0, closed: t.closed_count ?? 0, wins: t.wins ?? 0,
     positions: (s.positions || []).filter((p) => p.strategy === STRATEGY),
+    sets: s.arb_sets || [],
     scoredAt: s.generated_at,
   };
 }
@@ -511,13 +503,23 @@ function renderPositions(d) {
   const b = book(d);
   const open = b.positions.filter((x) => x.status === "open");
   const pos = $("positions-table");
-  pos.innerHTML = open.length
-    ? table(
-        [["Ticker"], ["Side"], ["Qty", "num"], ["Avg cost", "num"], ["Mark", "num"], ["Unrealized", "num"], ["Opened", "num"]],
-        open.map((x) => `<tr><td class="tk">${esc(x.ticker)}</td><td class="tk">${esc((x.side || "").toUpperCase())}</td>
-          <td class="num">${esc(x.qty_open)}</td><td class="num">${esc(pct(x.avg_cost))}</td><td class="num">${esc(pct(x.mark))}</td>
-          <td class="num ${signClass(x.unrealized_pnl)}">${esc(usd(x.unrealized_pnl))}</td><td class="num">${esc(ago(x.opened_at))}</td></tr>`),
-      )
+  // Hedged sets first (one row per set, its legs beneath), then any leg
+  // valued on its own. A set's PnL is marked as a whole -- the larger of
+  // its guaranteed payout and its sale value -- so legs show only prices.
+  const setOf = new Map(b.sets.map((x) => [x.arb_group, x]));
+  const inSet = (x) => x.arb_group && setOf.has(x.arb_group);
+  const legRow = (x, cls = "") => `<tr class="${cls}"><td class="tk">${esc(x.ticker)}</td><td class="tk">${esc((x.side || "").toUpperCase())}</td>
+    <td class="num">${esc(x.qty_open)}</td><td class="num">${esc(pct(x.avg_cost))}</td><td class="num">${esc(pct(x.mark))}</td>
+    <td class="num ${cls ? "" : signClass(x.unrealized_pnl)}">${cls ? "" : esc(usd(x.unrealized_pnl))}</td><td class="num">${cls ? "" : esc(ago(x.opened_at))}</td></tr>`;
+  const setRows = b.sets
+    .filter((x) => open.some((p) => p.arb_group === x.arb_group))
+    .map((x) => `<tr class="set-row"><td class="rel" colspan="5">${esc(REL_LABEL[x.relation] || x.relation || "Hedged set")} &middot; ${x.tickers.length} legs
+        <span class="p">Pays at least ${esc(usd(x.guaranteed_payout, false))} at resolution &middot; ${esc(usd(x.at_risk, false))} at risk if the relation is wrong</span></td>
+        <td class="num ${signClass(x.unrealized_pnl)}">${esc(usd(x.unrealized_pnl))}</td><td class="num">${esc(ago(x.opened_at))}</td></tr>`
+      + open.filter((p) => p.arb_group === x.arb_group).map((p) => legRow(p, "leg-row")).join(""));
+  const rows = [...setRows, ...open.filter((x) => !inSet(x)).map((x) => legRow(x))];
+  pos.innerHTML = rows.length
+    ? table([["Ticker"], ["Side"], ["Qty", "num"], ["Avg cost", "num"], ["Mark", "num"], ["Unrealized", "num"], ["Opened", "num"]], rows)
     : emptyNote();
   staggerRows(pos);
 

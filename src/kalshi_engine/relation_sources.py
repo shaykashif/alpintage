@@ -312,6 +312,11 @@ def polymarket_as_kalshi_shape(pm: dict) -> dict:
     and mark-to-market work the same way for both venues."""
     prices = [float(p) for p in json.loads(pm.get("outcomePrices") or "[]")]
     shaped = {"yes_bid_dollars": pm.get("bestBid"), "yes_ask_dollars": pm.get("bestAsk"), "status": "active"}
+    # Polymarket's own taker fee, so the scorer charges each venue's exit fee.
+    sched = pm.get("feeSchedule") or {}
+    fees_on = pm.get("feesEnabled") and pm.get("feeType") != "zero_fees"
+    shaped["fee_rate"] = float(sched.get("rate", 0.0)) if fees_on else 0.0
+    shaped["fee_exponent"] = float(sched.get("exponent", 1.0))
     if pm.get("closed") and prices:
         if prices[0] >= 0.99:
             shaped.update(status="settled", result="yes")

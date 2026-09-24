@@ -111,6 +111,11 @@ def build_positions(rows: list[dict]) -> dict[str, Position]:
                 "fair_at_entry": row.get("fair"),
                 "event_ticker": row.get("event_ticker"),
                 "entry_price": row.get("price"),
+                # Relation-arb legs bought together share an arb_group, so
+                # the scorer can value them as one hedged set.
+                "arb_group": row.get("arb_group"),
+                "relation": row.get("relation"),
+                "payout_per_set": row.get("payout_per_set"),
             }
         else:
             qty = row.get("qty", 0.0)
