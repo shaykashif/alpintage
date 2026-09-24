@@ -194,7 +194,6 @@ tbody tr:hover { background: var(--bg-sunk); }
 .empty {
   font-family: var(--mono); font-size: 12px; color: var(--ink-3); padding: 28px 0; text-align: center; letter-spacing: 0.02em;
 }
-.empty::before { content: "// "; }
 
 /* ---- comparisons -------------------------------------------------------- */
 .filters { display: inline-flex; flex-wrap: wrap; border: 1px solid var(--rule-strong); }

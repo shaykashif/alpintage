@@ -30,7 +30,9 @@ function ago(iso) {
   if (s < 86400) return Math.floor(s / 3600) + "h ago";
   return Math.floor(s / 86400) + "d ago";
 }
-const emptyNote = (text) => `<div class="empty">${esc(text)}</div>`;
+// One wording for every empty state, by the owner's choice.
+const EMPTY_TEXT = "No data yet, check back later.";
+const emptyNote = () => `<div class="empty">${EMPTY_TEXT}</div>`;
 const table = (head, rows) =>
   `<table><thead><tr>${head.map(([h, cls]) => `<th class="${cls || ""}">${h}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table>`;
 
@@ -224,7 +226,7 @@ function renderCharts(d, { animateLines = true } = {}) {
   const labels = pts.map((p) => new Date(p.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
   const has = pts.length > 0;
   $("equity-empty").hidden = has;
-  $("equity-empty").textContent = "no relation-arb trades yet — the curve starts with the first scoring pass after one";
+  $("equity-empty").textContent = EMPTY_TEXT;
   document.querySelectorAll("#equityChart, #capitalChart").forEach((c) => (c.parentElement.hidden = !has));
   const last = pts[pts.length - 1] || {};
   $("equity-legend").innerHTML =
@@ -269,7 +271,7 @@ function renderRelations(d) {
   stats.forEach(([, v], i) => countTo($(`rel-stat-${i}`), v ?? 0, (x) => Math.round(x ?? 0).toLocaleString()));
 
   const el = $("rel-table");
-  if (!r.recent?.length) { el.innerHTML = emptyNote("no price has broken a confirmed relation yet — rare by design"); return; }
+  if (!r.recent?.length) { el.innerHTML = emptyNote(); return; }
   el.innerHTML = table(
     [["Relation"], ["Legs"], ["Edge / set", "num"], ["Qty", "num"], ["Status"], ["When", "num"]],
     r.recent.map((a) => `<tr>
@@ -310,7 +312,7 @@ function renderComparisons(d) {
   const el = $("cmp-table");
   if (!c) {
     $("cmp-stats").innerHTML = "";
-    el.innerHTML = emptyNote("the first scan with this version writes the comparisons list");
+    el.innerHTML = emptyNote();
     $("cmp-more").hidden = true;
     return;
   }
@@ -346,7 +348,7 @@ function renderComparisons(d) {
           <td class="num ${r.status === "violation" ? "pos" : ""}" title="best set's guaranteed profit at current prices; negative = how far from a violation">${r.edge === null || r.edge === undefined ? "—" : esc(usd(r.edge)) + "/set"}${r.status === "unpriced" && r.note ? `<span class="why">${esc(r.note)}</span>` : ""}</td>
           <td class="num">${esc(ago(r.asked_at))}</td></tr>`),
       )
-    : emptyNote(f === "all" ? "no pairs judged in the latest scan yet" : "nothing in this filter right now");
+    : emptyNote();
   const more = $("cmp-more");
   more.hidden = rows.length <= cmpState.limit;
   more.textContent = `Show more (${(rows.length - cmpState.limit).toLocaleString()} left)`;
@@ -373,7 +375,7 @@ function renderPositions(d) {
           <td class="num">${esc(x.qty_open)}</td><td class="num">${esc(pct(x.avg_cost))}</td><td class="num">${esc(pct(x.mark))}</td>
           <td class="num ${signClass(x.unrealized_pnl)}">${esc(usd(x.unrealized_pnl))}</td><td class="num">${esc(ago(x.opened_at))}</td></tr>`),
       )
-    : emptyNote("no open positions");
+    : emptyNote();
   staggerRows(pos);
 
   const fills = (d.paper_trading.recent_fills || []).filter((f) => f.strategy === STRATEGY).slice(0, 30);
@@ -390,7 +392,7 @@ function renderPositions(d) {
             <td class="wrap">${esc(f.reason || "")}</td><td class="num">${esc(ago(f.ts))}</td></tr>`;
         }),
       )
-    : emptyNote("no paper trades yet");
+    : emptyNote();
   staggerRows(tr);
 }
 

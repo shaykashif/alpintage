@@ -14,6 +14,9 @@ the market's result and writes it to the cached summary.
 from __future__ import annotations
 
 import json
+import os
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -116,6 +119,42 @@ def build_positions(rows: list[dict]) -> dict[str, Position]:
             pos.realized_pnl_usd += row.get("proceeds_usd", 0.0) - pos.avg_cost * qty
             pos.qty_sold += qty
     return positions
+
+
+LOCK_PATH = DEFAULT_LOG_PATH.with_name("ledger.lock")
+
+
+@contextmanager
+def ledger_lock(path: Path | str = LOCK_PATH, timeout_s: float = 10.0, stale_s: float = 60.0):
+    """Cross-process lock around read-decide-append on the paper ledger. Two
+    processes (the scanner and the every-few-seconds watcher) can see the
+    same violation at once; without this both would buy it. O_CREAT|O_EXCL
+    is atomic on every OS we run on, so no platform-specific locking is
+    needed. A lock older than `stale_s` belongs to a crashed holder and is
+    broken."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > stale_s:
+                    path.unlink(missing_ok=True)
+                    continue
+            except FileNotFoundError:
+                continue
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"ledger lock {path} held too long")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def open_positions(rows: list[dict], exclude_tickers: set[str] | None = None) -> dict[str, Position]:

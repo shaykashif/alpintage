@@ -253,6 +253,51 @@ def polymarket_contracts(events: list[VenueEvent], topics: dict[str, str | None]
     return out
 
 
+# ---- Fast quote refresh (the watcher's every-few-seconds loop) ------------------
+
+@dataclass
+class Quote:
+    yes_bid: float | None
+    yes_ask: float | None
+    yes_bid_size: float | None = None
+    yes_ask_size: float | None = None
+
+
+QUOTE_BATCH = 100  # both venues accept ~100 identifiers per request (verified live 2026-09-24)
+
+
+def fetch_kalshi_quotes(tickers: list[str], client: httpx.Client | None = None) -> dict[str, Quote]:
+    """Top of book for specific Kalshi markets: GET /markets?tickers=a,b,...
+    returned all 67 watched markets in one ~0.4 s call."""
+    client = client or httpx.Client(base_url=KALSHI_BASE, timeout=10.0)
+    out: dict[str, Quote] = {}
+    for i in range(0, len(tickers), QUOTE_BATCH):
+        r = client.get("/markets", params={"tickers": ",".join(tickers[i:i + QUOTE_BATCH]), "limit": 1000})
+        r.raise_for_status()
+        for m in r.json().get("markets", []):
+            if m.get("status") != "active":
+                continue  # closed/settled: no longer tradeable, leave it unquoted
+            out[m["ticker"]] = Quote(_f(m.get("yes_bid_dollars")), _f(m.get("yes_ask_dollars")),
+                                     _f(m.get("yes_bid_size_fp")), _f(m.get("yes_ask_size_fp")))
+    return out
+
+
+def fetch_polymarket_quotes(slugs: list[str]) -> dict[str, Quote]:
+    """Best bid/ask for specific Polymarket markets, keyed by "PM-<slug>".
+    Gamma defaults to 20 rows per call -- `limit` must be passed or a batch
+    silently comes back short (seen live: 20 of 35)."""
+    out: dict[str, Quote] = {}
+    for i in range(0, len(slugs), QUOTE_BATCH):
+        batch = slugs[i:i + QUOTE_BATCH]
+        r = httpx.get(f"{POLY_BASE}/markets", params=[("slug", s) for s in batch] + [("limit", QUOTE_BATCH)], timeout=10.0)
+        r.raise_for_status()
+        for m in r.json():
+            if m.get("closed") or not m.get("acceptingOrders", True):
+                continue
+            out[f"PM-{m['slug']}"] = Quote(_f(m.get("bestBid")), _f(m.get("bestAsk")))
+    return out
+
+
 def fetch_polymarket_market(slug: str) -> dict | None:
     """One Polymarket market by slug, for scoring a paper position."""
     r = httpx.get(f"{POLY_BASE}/markets", params={"slug": slug}, timeout=20.0)
