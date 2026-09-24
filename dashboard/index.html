@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pternas &middot; Arbitrage engine for cultural and economic event markets</title>
-<meta name="description" content="Pternas is an arbitrage engine that uses frontier classification models to cross compare thousands of cultural and economic events in real time, finding discrepancies and violations with unmatched speed.">
+<title>Pternas &middot; Prediction market arbitrage across Kalshi and Polymarket</title>
+<meta name="description" content="Prediction market relationship arbitrage: a frontier classification model finds logically linked Kalshi and Polymarket markets, then paper-trades mispricings.">
 <link rel="canonical" href="https://pternas.com/">
-<meta name="robots" content="index, follow">
+<meta name="robots" content="index, follow, max-image-preview:large">
 <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F7F6F5">
 <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#121110">
 
@@ -21,14 +21,14 @@
 <meta property="og:site_name" content="Pternas">
 <meta property="og:url" content="https://pternas.com/">
 <meta property="og:title" content="Pternas &middot; There's no points for second best.">
-<meta property="og:description" content="Pternas is an arbitrage engine that uses frontier classification models to cross compare thousands of cultural and economic events in real time, finding discrepancies and violations with unmatched speed.">
+<meta property="og:description" content="Prediction market relationship arbitrage: a frontier classification model finds logically linked Kalshi and Polymarket markets, then paper-trades mispricings.">
 <meta property="og:image" content="https://pternas.com/assets/brand/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Pternas: There's no points for second best.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Pternas &middot; There's no points for second best.">
-<meta name="twitter:description" content="Pternas is an arbitrage engine that uses frontier classification models to cross compare thousands of cultural and economic events in real time, finding discrepancies and violations with unmatched speed.">
+<meta name="twitter:description" content="Prediction market relationship arbitrage: a frontier classification model finds logically linked Kalshi and Polymarket markets, then paper-trades mispricings.">
 <meta name="twitter:image" content="https://pternas.com/assets/brand/og-image.png">
 
 <script type="application/ld+json">
@@ -38,7 +38,12 @@
     {"@type": "Organization", "@id": "https://pternas.com/#org", "name": "Pternas", "url": "https://pternas.com/",
      "logo": "https://pternas.com/assets/brand/icon-512.png"},
     {"@type": "WebSite", "@id": "https://pternas.com/#site", "name": "Pternas", "url": "https://pternas.com/",
-     "description": "Pternas is an arbitrage engine that uses frontier classification models to cross compare thousands of cultural and economic events in real time, finding discrepancies and violations with unmatched speed.", "publisher": {"@id": "https://pternas.com/#org"}}
+     "description": "Prediction market relationship arbitrage: a frontier classification model finds logically linked Kalshi and Polymarket markets, then paper-trades mispricings.", "publisher": {"@id": "https://pternas.com/#org"}},
+    {"@type": "WebPage", "@id": "https://pternas.com/#page", "url": "https://pternas.com/",
+     "name": "Pternas · Prediction market arbitrage across Kalshi and Polymarket",
+     "description": "Prediction market relationship arbitrage: a frontier classification model finds logically linked Kalshi and Polymarket markets, then paper-trades mispricings.",
+     "isPartOf": {"@id": "https://pternas.com/#site"}, "about": {"@id": "https://pternas.com/#org"},
+     "primaryImageOfPage": "https://pternas.com/assets/brand/og-image.png", "inLanguage": "en"}
   ]
 }
 </script>
@@ -57,7 +62,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/app.css?v=7">
+<link rel="stylesheet" href="/assets/app.css?v=8">
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -162,6 +167,34 @@
       <div class="ledger" data-reveal>
         <div class="cell"><div class="cell-head"><span class="cell-title">Open positions</span></div><div class="table-wrap" id="positions-table"></div></div>
         <div class="cell"><div class="cell-head"><span class="cell-title">Recent entries &amp; exits</span></div><div class="table-wrap" id="paper-table"></div></div>
+      </div>
+    </section>
+
+    <section class="section" id="method" aria-labelledby="method-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">05</span><h2 id="method-h">How it works</h2>
+      </div>
+      <div class="ledger thirds" data-reveal>
+        <div class="cell step">
+          <span class="cell-title">01 &middot; Classify</span>
+          <h3>How two markets relate</h3>
+          <p>Pternas cross-compares thousands of cultural and economic events on Kalshi and Polymarket. For each pair, a frontier classification model reads both markets' full resolution rules and returns a probability for each relationship: A implies B, B implies A, mutually exclusive, or exhaustive.</p>
+        </div>
+        <div class="cell step">
+          <span class="cell-title">02 &middot; Confirm</span>
+          <h3>Probabilities, not prose</h3>
+          <p>Because the output is a calculated probability rather than an LLM's free text, each judgment can be calibrated with thresholds, tuned against hand-labeled pairs and required to hold in both orders, which can make it reliable enough to act on without human review.</p>
+        </div>
+        <div class="cell step">
+          <span class="cell-title">03 &middot; Trade on paper</span>
+          <h3>Re-priced every three seconds</h3>
+          <p>Once a relationship is confirmed, Pternas re-prices the pair every three seconds and paper-trades any price that violates it, buying every leg of the position or none. No real orders are ever placed.</p>
+        </div>
+        <div class="cell step wide">
+          <span class="cell-title">Why a classifier</span>
+          <h3>Logic, not matching titles</h3>
+          <p>Most cross-market arbitrage models match similar market titles deterministically. Pternas judges how markets are logically related instead, in about 0.3 seconds per pair, run in parallel across many pairs, so it can screen thousands of pairs a rules-based matcher would never connect. An LLM can take several seconds per judgment.</p>
+        </div>
       </div>
     </section>
   </main>

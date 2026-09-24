@@ -26,7 +26,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from flask import Flask, Response, jsonify, send_from_directory  # noqa: E402
+from urllib.parse import urlsplit  # noqa: E402
+
+from flask import Flask, Response, jsonify, redirect, request, send_from_directory  # noqa: E402
 
 from kalshi_engine.dashboard_data import full_summary  # noqa: E402
 
@@ -35,7 +37,29 @@ DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 SITE_URL = os.environ.get("SITE_URL", "https://pternas.com").rstrip("/")
 BRAND_DIR = DASHBOARD_DIR / "assets" / "brand"
 
+CANONICAL_HOST = urlsplit(SITE_URL).netloc
+
 app = Flask(__name__, static_folder=None)
+
+
+@app.before_request
+def canonical_host():
+    # www.pternas.com otherwise serves a duplicate copy of the site; 301 it to
+    # the canonical origin so search engines consolidate on one URL.
+    # (Cloudflare's "Redirect from WWW to root" rule does the same at the
+    # edge -- this is the fallback if that rule isn't set.)
+    if request.host == "www." + CANONICAL_HOST:
+        return redirect(SITE_URL + request.full_path.rstrip("?"), code=301)
+    return None
+
+
+@app.after_request
+def seo_headers(resp):
+    # The API must stay crawlable -- Googlebot fetches it to render the page's
+    # numbers -- but the raw JSON itself shouldn't show up in search results.
+    if request.path.startswith("/api/"):
+        resp.headers["X-Robots-Tag"] = "noindex"
+    return resp
 
 
 @app.route("/")
@@ -64,7 +88,10 @@ def favicon():
 
 @app.route("/robots.txt")
 def robots():
-    body = f"User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: {SITE_URL}/sitemap.xml\n"
+    # /api/ is deliberately not disallowed: blocking it would stop search
+    # engines rendering the page's data (the X-Robots-Tag header in
+    # seo_headers keeps the raw JSON out of the index instead).
+    body = f"User-agent: *\nAllow: /\n\nSitemap: {SITE_URL}/sitemap.xml\n"
     return Response(body, mimetype="text/plain")
 
 
@@ -90,6 +117,20 @@ def manifest():
             {"src": "/assets/brand/icon-512.png", "sizes": "512x512", "type": "image/png"},
         ],
     })
+
+
+@app.errorhandler(404)
+def not_found(_err):
+    body = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
+        '<meta name="robots" content="noindex"><title>Not found &middot; Pternas</title>'
+        '<style>body{font:16px/1.5 "Inter Tight",-apple-system,"Segoe UI",sans-serif;background:#F7F6F5;color:#171410;'
+        'margin:0;display:grid;place-items:center;min-height:100vh}a{color:#2200FF}'
+        '@media (prefers-color-scheme:dark){body{background:#121110;color:#EDEAE4}a{color:#7568FF}}</style></head>'
+        '<body><p>404 &middot; Nothing here. <a href="/">Back to Pternas</a></p></body></html>'
+    )
+    return Response(body, status=404, mimetype="text/html")
 
 
 @app.route("/api/summary")
