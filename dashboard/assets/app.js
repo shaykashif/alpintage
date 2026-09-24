@@ -56,11 +56,81 @@ function countTo(el, value, fmt, { duration = 900 } = {}) {
   animate(o, { v: value, duration: firstShow ? duration + 300 : duration, ease: "outExpo", onUpdate: () => (el.textContent = fmt(o.v)) });
 }
 
+// ---- first-load draw-in: every box's rules are traced as if drawn by hand,
+// then its contents fade in. Each [data-reveal] group draws once, when it
+// first scrolls into view. Strokes sit exactly on the real rules (1px gaps
+// between cells, outer borders, section underlines), which replace them
+// when done. Web Animations API, so it doesn't depend on anime.js loading.
+const DRAW_MS = 750, DRAW_STAGGER = 45, FADE_MS = 450;
+function drawPaths(group) {
+  const g = group.getBoundingClientRect();
+  const paths = [];
+  const rect = (el, grow) => {
+    const r = el.getBoundingClientRect();
+    const x = r.left - g.left - grow, y = r.top - g.top - grow, w = r.width + 2 * grow, h = r.height + 2 * grow;
+    paths.push({ d: `M${x} ${y}H${x + w}V${y + h}H${x}Z` });
+  };
+  if (group.classList.contains("section-head")) {
+    const y = g.height - 0.5;
+    paths.push({ d: `M0 ${y}H${g.width}`, ink: true });
+    return paths;
+  }
+  rect(group, -0.5); // outer border, centered on its 1px
+  if (group.classList.contains("hero")) {
+    const v = group.querySelector(".hero-visual");
+    const cs = v && getComputedStyle(v);
+    if (cs && parseFloat(cs.borderLeftWidth)) { const x = v.getBoundingClientRect().left - g.left + 0.5; paths.push({ d: `M${x} 0V${g.height}` }); }
+    else if (cs && parseFloat(cs.borderTopWidth)) { const y = v.getBoundingClientRect().top - g.top + 0.5; paths.push({ d: `M0 ${y}H${g.width}` }); }
+    return paths;
+  }
+  // Grid cells: their 1px gaps are the inner rules, so trace each cell grown half a pixel.
+  group.querySelectorAll(":scope > *, .stats-row > *").forEach((el) => rect(el, 0.5));
+  return paths;
+}
+function drawGroup(group) {
+  const g = group.getBoundingClientRect();
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("draw-svg");
+  svg.setAttribute("aria-hidden", "true");
+  Object.assign(svg.style, { left: `${g.left + scrollX}px`, top: `${g.top + scrollY}px`, width: `${g.width}px`, height: `${g.height}px` });
+  const anims = [];
+  drawPaths(group).forEach((p, i) => {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", p.d);
+    path.setAttribute("pathLength", "1");
+    path.setAttribute("stroke-dasharray", "1");
+    path.setAttribute("stroke-dashoffset", "1");
+    if (p.ink) path.classList.add("ink");
+    svg.appendChild(path);
+    anims.push(path.animate({ strokeDashoffset: [1, 0] }, { duration: DRAW_MS, delay: Math.min(i, 14) * DRAW_STAGGER, easing: "cubic-bezier(.65,0,.35,1)", fill: "forwards" }));
+  });
+  document.body.appendChild(svg);
+  const lineMs = DRAW_MS + Math.min(anims.length - 1, 14) * DRAW_STAGGER;
+  const content = group.querySelectorAll(".section-head > *, .hero > *, .cell > *, .stats-row > * > *");
+  const targets = group.matches(".section-head, .hero") ? group.children : content;
+  const fades = [...targets].map((el, i) => el.animate({ opacity: [0, 1] }, { duration: FADE_MS, delay: lineMs * 0.55 + Math.min(i, 10) * 30, fill: "forwards" }));
+  Promise.all([...anims, ...fades].map((a) => a.finished)).then(() => {
+    group.classList.add("drawn"); // real rules and contents take over, at the same pixels
+    svg.remove();
+    fades.forEach((a) => a.cancel());
+  });
+}
 function revealOnce() {
   if (window.__revealed) return;
-  window.__revealed = true;
-  if (reduce) return;
-  animate("[data-reveal]", { opacity: [0, 1], translateY: [14, 0], duration: 800, ease: "outExpo", delay: stagger(80) });
+  window.__revealed = true; // tells index.html's fallback not to un-hide everything
+  const groups = document.querySelectorAll("[data-reveal]");
+  if (reduce || !("IntersectionObserver" in window)) { groups.forEach((g) => g.classList.add("drawn")); return; }
+  const io = new IntersectionObserver((entries) => entries.forEach((e) => {
+    if (!e.isIntersecting) return;
+    io.unobserve(e.target);
+    drawGroup(e.target);
+  }), { threshold: 0.12 });
+  groups.forEach((g) => io.observe(g));
+  // Jumped past without it ever entering view (End key, fast scroll): show it, undrawn.
+  const skipPassed = () => groups.forEach((g) => {
+    if (!g.classList.contains("drawn") && g.getBoundingClientRect().bottom < 0) { io.unobserve(g); g.classList.add("drawn"); }
+  });
+  addEventListener("scroll", skipPassed, { passive: true });
 }
 
 const seenRows = new WeakSet();

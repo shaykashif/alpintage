@@ -84,12 +84,6 @@ a { color: inherit; }
 .brand-mark { display: grid; grid-template-columns: repeat(3, 5px); gap: 1px; }
 .brand-mark i { width: 5px; height: 5px; background: var(--ink); }
 .brand-mark i.off { background: transparent; }
-.nav { display: flex; gap: 2px; margin-left: 12px; }
-.nav a {
-  font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--ink-2); text-decoration: none; padding: 6px 10px; border: 1px solid transparent;
-}
-.nav a:hover { color: var(--ink); border-color: var(--rule); }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
 .status { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
 .status .dot { width: 7px; height: 7px; background: var(--good); }
@@ -234,13 +228,25 @@ footer {
 }
 
 /* Reveal-on-load targets start hidden only when motion is allowed and JS runs. */
-.js-motion [data-reveal] { opacity: 0; }
+/* First-load draw-in (app.js drawIn): until a group is drawn, its rules are
+   hidden and its contents transparent; SVG strokes trace the rules, then the
+   real ones take over (.drawn) at the same pixels. */
+.js-motion [data-reveal]:not(.drawn) { border-color: transparent; }
+.js-motion .ledger[data-reveal]:not(.drawn),
+.js-motion [data-reveal]:not(.drawn) .stats-row { background: transparent; }
+.js-motion [data-reveal]:not(.drawn) .hero-visual { border-color: transparent; }
+.js-motion .section-head[data-reveal]:not(.drawn) > *,
+.js-motion .hero[data-reveal]:not(.drawn) > *,
+.js-motion [data-reveal]:not(.drawn) .cell > *,
+.js-motion [data-reveal]:not(.drawn) .stats-row > * > * { opacity: 0; }
+.draw-svg { position: absolute; overflow: visible; pointer-events: none; z-index: 10; }
+.draw-svg path { fill: none; stroke: var(--rule); stroke-width: 1; shape-rendering: crispEdges; }
+.draw-svg path.ink { stroke: var(--ink); }
 
 @media (max-width: 960px) {
   .hero { grid-template-columns: 1fr; }
   .hero-visual { min-height: 320px; border-left: 0; border-top: 1px solid var(--rule); }
   .two, .halves { grid-template-columns: 1fr; }
-  .nav { display: none; }
   .section-head { flex-wrap: wrap; }
   .section-head p { margin-left: 0; text-align: left; }
 }
