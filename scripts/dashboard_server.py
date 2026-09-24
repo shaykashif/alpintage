@@ -5,23 +5,35 @@ Runs open with no authentication by default, per the project owner's choice
 -- no secrets or real money are exposed by this data, but anyone who has the
 server's IP can view it. To add basic auth later, see the comment in main().
 
-Usage (local):
+Usage (local development -- Flask's built-in server):
     uv run python scripts/dashboard_server.py
     uv run python scripts/dashboard_server.py --port 8080 --host 0.0.0.0
+
+Production (the VM, behind Cloudflare Tunnel -- see DEPLOY.md) runs the same
+`app` under gunicorn instead, bound to localhost only:
+    gunicorn --chdir scripts --bind 127.0.0.1:8080 --workers 2 dashboard_server:app
+
+SITE_URL (default https://pternas.com) is the public origin used in
+robots.txt and sitemap.xml.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from flask import Flask, jsonify, send_from_directory  # noqa: E402
+from flask import Flask, Response, jsonify, send_from_directory  # noqa: E402
 
 from kalshi_engine.dashboard_data import full_summary  # noqa: E402
 
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
+
+SITE_URL = os.environ.get("SITE_URL", "https://pternas.com").rstrip("/")
+BRAND_DIR = DASHBOARD_DIR / "assets" / "brand"
 
 app = Flask(__name__, static_folder=None)
 
@@ -41,8 +53,43 @@ def assets(filename):
     # Fonts never change, so cache them for a day; CSS/JS revalidate on
     # every load (ETag, so unchanged files are a cheap 304) -- a long cache
     # on code served stale pages after edits during development.
-    max_age = 86400 if filename.startswith("fonts/") else 0
+    max_age = 86400 if filename.startswith(("fonts/", "brand/")) else 0
     return send_from_directory(DASHBOARD_DIR / "assets", filename, max_age=max_age)
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return send_from_directory(BRAND_DIR, "favicon.ico", max_age=86400)
+
+
+@app.route("/robots.txt")
+def robots():
+    body = f"User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: {SITE_URL}/sitemap.xml\n"
+    return Response(body, mimetype="text/plain")
+
+
+@app.route("/sitemap.xml")
+def sitemap():
+    today = datetime.now(timezone.utc).date().isoformat()
+    body = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"  <url><loc>{SITE_URL}/</loc><lastmod>{today}</lastmod><changefreq>hourly</changefreq></url>\n"
+        "</urlset>\n"
+    )
+    return Response(body, mimetype="application/xml")
+
+
+@app.route("/site.webmanifest")
+def manifest():
+    return jsonify({
+        "name": "Pternas", "short_name": "Pternas", "start_url": "/", "display": "browser",
+        "background_color": "#F7F6F5", "theme_color": "#F7F6F5",
+        "icons": [
+            {"src": "/assets/brand/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/assets/brand/icon-512.png", "sizes": "512x512", "type": "image/png"},
+        ],
+    })
 
 
 @app.route("/api/summary")

@@ -12,7 +12,8 @@ def test_index_page_loads():
     client = app.test_client()
     resp = client.get("/")
     assert resp.status_code == 200
-    assert b"<title>Pternas</title>" in resp.data
+    assert b"<title>Pternas" in resp.data
+    assert b'rel="canonical" href="https://pternas.com/"' in resp.data
 
 
 def test_api_summary_returns_expected_shape():
@@ -30,3 +31,17 @@ def test_full_summary_does_not_crash_on_real_data():
     summary = full_summary()
     assert "predictions" in summary
     assert "cross_venue" in summary
+
+
+def test_seo_and_icon_routes():
+    client = app.test_client()
+    robots = client.get("/robots.txt")
+    assert robots.status_code == 200 and b"Sitemap: https://pternas.com/sitemap.xml" in robots.data
+    assert b"Disallow: /api/" in robots.data
+    sitemap = client.get("/sitemap.xml")
+    assert sitemap.status_code == 200 and b"<loc>https://pternas.com/</loc>" in sitemap.data
+    assert client.get("/favicon.ico").status_code == 200
+    assert client.get("/assets/brand/favicon.svg").status_code == 200
+    assert client.get("/assets/brand/og-image.png").status_code == 200
+    manifest = client.get("/site.webmanifest").get_json()
+    assert manifest["name"] == "Pternas" and len(manifest["icons"]) == 2

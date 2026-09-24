@@ -1,12 +1,18 @@
 [Unit]
-Description=Kalshi engine dashboard (web panel)
+Description=Pternas dashboard (web panel, served to the internet through Cloudflare Tunnel)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/alpintage
-ExecStart=/opt/alpintage/.venv/bin/python scripts/dashboard_server.py --host 0.0.0.0 --port 8080
+# gunicorn (a production WSGI server), not Flask's development server.
+# Bound to localhost only: the public reaches it through cloudflared (see
+# DEPLOY.md, "Custom domain"), so port 8080 never needs to be open. To expose
+# it directly on the IP again (no tunnel), override DASHBOARD_BIND to
+# 0.0.0.0:8080 and re-open the port.
+Environment=DASHBOARD_BIND=127.0.0.1:8080
+ExecStart=/opt/alpintage/.venv/bin/gunicorn --chdir scripts --bind ${DASHBOARD_BIND} --workers 2 --access-logfile - dashboard_server:app
 Restart=on-failure
 RestartSec=15
 EnvironmentFile=/opt/alpintage/.env

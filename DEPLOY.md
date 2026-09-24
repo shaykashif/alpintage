@@ -28,6 +28,11 @@ instance's own firewall. `uv` and this project both run fine on Ampere/ARM
 
 ## 3. Open the port in Oracle Cloud's console (the part the script can't do)
 
+> **Skip this step if you're using the custom domain** ("Custom domain:
+> pternas.com through Cloudflare Tunnel" below) -- the tunnel needs no
+> inbound port, and the dashboard service binds to localhost only. This
+> step is only for exposing the dashboard directly on the instance's IP.
+
 Oracle Cloud has a second, separate firewall at the cloud level, in front of
 the instance's own one. The setup script cannot touch this -- you have to do
 it in the OCI console:
@@ -55,17 +60,101 @@ systemctl status kalshi-dashboard.service
 journalctl -u kalshi-loop.service -f      # live log of the scan loop
 ```
 
-Then visit `http://<your-instance-public-ip>:8080` in a browser.
+On the box, `curl -s localhost:8080 | head -5` should print the page's HTML.
+Then set up the domain (section "Custom domain" below) and visit
+<https://pternas.com>.
 
 ## What's actually running
 
-- **`kalshi-loop.service`** -- `scripts/run_loop.py`, every 30 minutes: runs
-  the ladder/bracket scanner (paper-trades any violation found, which is
-  rare by design), collects a batch of real Jev predictions, and scores
-  anything settled. All paper. Logs to `data/*.jsonl` and `data/loop.log`.
-- **`kalshi-dashboard.service`** -- `scripts/dashboard_server.py`, serving
-  the panel at port 8080. Reads the same log files; never calls a live API
-  itself, so it stays fast regardless of how often you refresh it.
+- **`kalshi-loop.service`** -- `scripts/run_loop.py`, every 30 minutes: the
+  relationship-arbitrage scanner (the only strategy that paper-trades by
+  default), the ladder/bracket and sports scanners (scan + log only), and
+  scoring. All paper. Logs to `data/*.jsonl` and `data/loop.log`.
+- **`kalshi-dashboard.service`** -- the Pternas site: `scripts/dashboard_server.py`
+  under gunicorn on `127.0.0.1:8080`, reached from the internet through
+  Cloudflare Tunnel (next section). Reads the same log files; never calls a
+  live API itself, so it stays fast regardless of traffic.
+
+## Custom domain: pternas.com through Cloudflare Tunnel
+
+The site is served at `https://pternas.com` by **Cloudflare Tunnel**: a small
+agent (`cloudflared`) on the VM opens an *outbound* connection to Cloudflare,
+and Cloudflare forwards visitors down it to `localhost:8080`. So: HTTPS with
+no certificates to manage, no inbound ports open, and the origin IP is never
+exposed. (The alternative -- DNS A record + nginx + an origin certificate --
+works too but means opening 80/443 and managing TLS yourself.)
+
+### A. Create the tunnel (Cloudflare dashboard)
+
+1. Cloudflare dashboard -> **Zero Trust** -> **Networks** -> **Tunnels** ->
+   **Create a tunnel** -> **Cloudflared** -> name it `pternas`.
+2. On the "Install connector" screen pick **Red Hat** (Oracle Linux) and
+   **arm64** (the Always Free Ampere shape; pick 64-bit if yours is x86).
+   It shows two commands -- an install and a
+   `sudo cloudflared service install <TOKEN>`. Keep that page open.
+
+### B. Install the connector (on the VM)
+
+```bash
+ssh opc@<your-instance-ip>
+```
+
+Paste the two commands from step A.2. Then confirm it's running and connected:
+
+```bash
+sudo systemctl status cloudflared
+```
+
+Back in the dashboard, the tunnel should show **HEALTHY**.
+
+### C. Route the domain to the dashboard (Cloudflare dashboard)
+
+1. In the tunnel -> **Public Hostname** -> **Add a public hostname**:
+   - Subdomain: *(empty)* -- Domain: `pternas.com`
+   - Service: **HTTP** -- URL: `localhost:8080`
+2. Add a second one for `www` -> same `HTTP` / `localhost:8080`.
+3. Cloudflare creates the DNS records for you (proxied CNAMEs to the tunnel).
+   **If `pternas.com` or `www` already has an A/AAAA/CNAME record, delete it
+   first** under DNS -> Records, or adding the hostname will fail.
+4. SSL/TLS -> Edge Certificates -> turn on **Always Use HTTPS**.
+5. Optional: Rules -> Redirect Rules -> "Redirect from WWW to root" template,
+   so `www.pternas.com` 301s to `pternas.com` (the page's canonical URL).
+
+### D. Switch the dashboard to gunicorn on localhost (on the VM)
+
+The repo's service file now runs gunicorn bound to `127.0.0.1:8080`. Pull,
+install the new dependency, and re-install the service file (setup.sh
+substitutes the checkout path for `/opt/alpintage`):
+
+```bash
+cd ~/alpintage && git pull && uv sync
+```
+
+```bash
+sed "s#/opt/alpintage#$HOME/alpintage#g" deploy/kalshi-dashboard.service | sudo tee /etc/systemd/system/kalshi-dashboard.service >/dev/null
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl restart kalshi-dashboard.service kalshi-loop.service
+```
+
+Check <https://pternas.com> loads. Then close the old public port, since
+nothing should reach 8080 except the tunnel now:
+
+```bash
+sudo firewall-cmd --permanent --remove-port=8080/tcp && sudo firewall-cmd --reload
+```
+
+...and delete the port-8080 ingress rule you added in step 3 (Oracle Cloud
+console -> subnet -> Security List). After this, `http://<ip>:8080` stops
+answering -- expected.
+
+### E. Tell search engines
+
+- Google Search Console -> add property `pternas.com` (the DNS TXT
+  verification is quickest since the DNS is already at Cloudflare) -> submit
+  `https://pternas.com/sitemap.xml`.
+- Same at Bing Webmaster Tools (it can import from Search Console).
 
 ## Updating after a code change
 
