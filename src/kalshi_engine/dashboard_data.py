@@ -147,6 +147,7 @@ def paper_trading_summary(recent_n: int = 30) -> dict:
             "open_cost": r.get("open_cost"),
             "stat_arb_pnl": (r.get("by_strategy") or {}).get(ledger.STAT_ARB_STRATEGY),
             "relation_arb_pnl": (r.get("by_strategy") or {}).get("relation_arb"),
+            "by_strategy": r.get("by_strategy") or {},
         }
         for r in _load_jsonl(DATA_DIR / "paper_equity.jsonl")
     ]

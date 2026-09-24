@@ -8,3 +8,6 @@ __pycache__/
 data/
 *.parquet
 *.duckdb
+
+# Aktiv Grotesk is a commercial font (Dalton Maag) -- local use only, never commit/redistribute
+dashboard/assets/fonts/

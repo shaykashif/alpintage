@@ -28,7 +28,21 @@ app = Flask(__name__, static_folder=None)
 
 @app.route("/")
 def index():
-    return send_from_directory(DASHBOARD_DIR, "index.html")
+    # Always revalidate, so a deploy (git pull) shows up on the next load.
+    return send_from_directory(DASHBOARD_DIR, "index.html", max_age=0)
+
+
+@app.route("/assets/<path:filename>")
+def assets(filename):
+    # Self-hosted static files (fonts). send_from_directory refuses paths
+    # that escape the directory. assets/fonts/ is gitignored -- see
+    # .gitignore -- so a fresh checkout simply falls back to the free
+    # web fonts the page also declares.
+    # Fonts never change, so cache them for a day; CSS/JS revalidate on
+    # every load (ETag, so unchanged files are a cheap 304) -- a long cache
+    # on code served stale pages after edits during development.
+    max_age = 86400 if filename.startswith("fonts/") else 0
+    return send_from_directory(DASHBOARD_DIR / "assets", filename, max_age=max_age)
 
 
 @app.route("/api/summary")

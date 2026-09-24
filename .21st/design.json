@@ -1,0 +1,23 @@
+{
+  "product": "Pternas",
+  "surface": "dashboard/ (single Flask-served page, vanilla JS modules, no build step)",
+  "decisions": [
+    {
+      "date": "2026-09-24",
+      "direction": "Retro financial terminal on paper, after conway.ai: warm paper ground, ink type, one electric accent, hairline-ruled ledger grid, square corners.",
+      "tokens": {
+        "light": { "bg": "#F7F6F5", "ink": "#171410", "accent": "#2200FF", "series": ["#2200FF", "#D9541A"] },
+        "dark": { "bg": "#121110", "ink": "#EDEAE4", "accent": "#7568FF", "series": ["#7568FF", "#E3682E"] },
+        "note": "Series pairs pass dataviz validate_palette.js on their own surface; dark is its own validated steps, not a flip."
+      },
+      "type": "Aktiv Grotesk for everything (tabular figures for numbers); Inter Tight as the free fallback. Aktiv files are local-only (gitignored) pending a web license.",
+      "motion": "anime.js v4: staggered reveals, count-up numbers, row staggers, helix morphs. All disabled under prefers-reduced-motion.",
+      "components": [
+        "Pointillist DotField hero background: halftone field, pointer repel, scroll kick (original)",
+        "FiberHelix hero visual, three topologies (inspired by 21st.dev Helix Chrono Matrix)",
+        "Seven-segment LCD total PnL (adapted from 21st.dev Segmented LCD Number Ticker)"
+      ],
+      "charts": "One axis per chart (capital at risk is its own chart, never a second y-axis); legend with current values; crosshair tooltips."
+    }
+  ]
+}

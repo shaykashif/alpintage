@@ -3,334 +3,170 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Kalshi Engine Dashboard</title>
+<title>Pternas</title>
+<meta name="description" content="Paper-traded relationship arbitrage, cross-venue sports stat-arb and ladder/bracket arbs on Kalshi and Polymarket. No real orders.">
+<script>
+  // Before first paint: saved theme choice (else OS preference applies via
+  // CSS), and hide reveal targets only if motion is allowed -- with a
+  // fallback that un-hides them if the animation module never loads.
+  (function () {
+    try { var t = localStorage.getItem("pternas-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      document.documentElement.classList.add("js-motion");
+      setTimeout(function () { if (!window.__revealed) document.documentElement.classList.remove("js-motion"); }, 2500);
+    }
+  })();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/assets/app.css?v=2">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
-<style>
-  :root {
-    --bg: #0f1115; --panel: #171a21; --border: #262b36; --text: #e6e8ec;
-    --muted: #8b93a3; --accent: #4f8cff; --accent2: #ff8a4f;
-    --good: #3ecf8e; --bad: #ff5c5c;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 24px; background: var(--bg); color: var(--text);
-    font-family: -apple-system, Segoe UI, Roboto, sans-serif; font-size: 14px;
-  }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: var(--muted); margin-bottom: 24px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 16px; }
-  .panel {
-    background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-    padding: 16px 18px;
-  }
-  .panel h2 { font-size: 14px; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-  .stat-row { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 14px; }
-  .stat { }
-  .stat .n { font-size: 24px; font-weight: 600; }
-  .stat .l { color: var(--muted); font-size: 12px; }
-  table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-weight: 500; }
-  .pill { display: inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; }
-  .pill.good { background: rgba(62,207,142,.15); color: var(--good); }
-  .pill.bad { background: rgba(255,92,92,.15); color: var(--bad); }
-  .pill.stale { background: rgba(255,92,92,.15); color: var(--bad); }
-  .pill.live { background: rgba(62,207,142,.15); color: var(--good); }
-  canvas { max-height: 260px; }
-  .empty { color: var(--muted); font-style: italic; padding: 20px 0; text-align: center; }
-  pre.log { max-height: 220px; overflow-y: auto; font-size: 11px; color: var(--muted); white-space: pre-wrap; margin: 0; }
-  .full { grid-column: 1 / -1; }
-  footer { margin-top: 20px; color: var(--muted); font-size: 12px; }
-</style>
 </head>
 <body>
-  <h1>Kalshi Engine Dashboard</h1>
-  <div class="sub">Relationship arbitrage on event markets (Jev-judged), cross-venue sports stat-arb, and ladder/bracket arbs, all paper-traded -- no real orders anywhere. <span id="updated"></span></div>
+<div class="shell">
 
-  <div class="grid">
+  <header class="topbar">
+    <a class="brand" href="#top" aria-label="Pternas, back to top">
+      <span class="brand-mark" aria-hidden="true"><i></i><i class="off"></i><i></i><i class="off"></i><i></i><i class="off"></i><i></i><i class="off"></i><i></i></span>
+      Pternas
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#book">Book</a><a href="#relations">Relations</a><a href="#positions">Positions</a><a href="#sports">Sports</a><a href="#system">System</a>
+    </nav>
+    <div class="topbar-right">
+      <span class="status" id="loop-status"><span class="dot" aria-hidden="true"></span><span id="loop-status-text">--</span></span>
+      <span class="clock" id="clock" aria-hidden="true">--:--:-- UTC</span>
+      <div class="toggle" role="group" aria-label="Color theme">
+        <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
+        <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+      </div>
+    </div>
+  </header>
 
-    <div class="panel">
-      <h2>Loop health</h2>
-      <div id="loop-health"></div>
+  <main id="top">
+    <section class="hero" data-reveal aria-labelledby="hero-title">
+      <canvas class="hero-dots" id="dots" aria-hidden="true"></canvas>
+      <div class="hero-copy">
+        <div class="eyebrow">Paper book &middot; mark-to-market &middot; USD</div>
+        <h1 id="hero-title">Three strategies,<br><em>zero real orders.</em></h1>
+        <div class="lcd-wrap">
+          <span class="lcd-sign num" id="pnl-sign">+</span>
+          <span class="lcd" id="pnl-lcd" role="img" aria-label="total PnL"></span>
+          <span class="lcd-unit">TOTAL PNL</span>
+        </div>
+        <div class="hero-stats">
+          <div class="kv"><div class="k">Realized</div><div class="v" id="h-realized">--</div></div>
+          <div class="kv"><div class="k">Unrealized</div><div class="v" id="h-unrealized">--</div></div>
+          <div class="kv"><div class="k">Capital at risk</div><div class="v" id="h-capital">--</div></div>
+        </div>
+        <div class="hero-foot" id="hero-foot"></div>
+      </div>
+      <div class="hero-visual">
+        <div class="chips" role="group" aria-label="Fiber visual mode">
+          <button type="button" class="chip" data-mode="helix" aria-pressed="true">Helix</button>
+          <button type="button" class="chip" data-mode="strata" aria-pressed="false">Strata</button>
+          <button type="button" class="chip" data-mode="ribbon" aria-pressed="false">Ribbon</button>
+          <button type="button" class="chip freeze" id="freeze" aria-pressed="false">Freeze</button>
+        </div>
+        <canvas id="helix" aria-hidden="true"></canvas>
+        <div class="visual-caption" id="visual-caption">relation graph</div>
+      </div>
+    </section>
+
+    <div class="ledger strip" data-reveal>
+      <div class="cell" data-strategy="relation_arb">
+        <div class="cell-head"><span class="cell-title">Relation arb</span><span class="cell-tag">event markets &middot; Jev-judged</span></div>
+        <div class="big" data-field="pnl">--</div><div class="sub" data-field="sub">--</div>
+        <svg class="spark" data-field="spark" viewBox="0 0 300 34" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div>
+      <div class="cell" data-strategy="stat_arb">
+        <div class="cell-head"><span class="cell-title">Stat arb</span><span class="cell-tag">sports &middot; cross-venue</span></div>
+        <div class="big" data-field="pnl">--</div><div class="sub" data-field="sub">--</div>
+        <svg class="spark" data-field="spark" viewBox="0 0 300 34" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div>
+      <div class="cell" data-strategy="ladder_bracket">
+        <div class="cell-head"><span class="cell-title">Ladder / bracket</span><span class="cell-tag">within-Kalshi arbs</span></div>
+        <div class="big" data-field="pnl">--</div><div class="sub" data-field="sub">--</div>
+        <svg class="spark" data-field="spark" viewBox="0 0 300 34" preserveAspectRatio="none" aria-hidden="true"></svg>
+      </div>
     </div>
 
-    <div class="panel">
-      <h2>Jev vs. market -- Brier score (lower is better)</h2>
-      <div id="brier-stats" class="stat-row"></div>
-      <canvas id="brierChart"></canvas>
-    </div>
+    <section class="section" id="book" aria-labelledby="book-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">01</span><h2 id="book-h">Equity curve</h2>
+        <p>One point per scoring pass. Open positions are valued at the bid a sale would get, net of the exit fee.</p>
+      </div>
+      <div class="ledger two" data-reveal>
+        <div class="cell">
+          <div class="cell-head"><span class="cell-title">PnL, USD</span><div class="legend" id="equity-legend"></div></div>
+          <div class="chart-box"><canvas id="equityChart" role="img" aria-label="Equity curve: total and realized PnL over time"></canvas></div>
+          <div class="cell-head" style="margin-top:18px"><span class="cell-title">Capital at risk, USD</span></div>
+          <div class="chart-box short"><canvas id="capitalChart" role="img" aria-label="Capital at risk over time"></canvas></div>
+          <div class="empty" id="equity-empty" hidden></div>
+        </div>
+        <div class="cell">
+          <div class="cell-head"><span class="cell-title">Book</span></div>
+          <div class="table-wrap"><table><tbody id="book-table"></tbody></table></div>
+        </div>
+      </div>
+    </section>
 
-    <div class="panel">
-      <h2>Cross-venue divergence distribution</h2>
-      <div id="cv-stats" class="stat-row"></div>
-      <canvas id="diffChart"></canvas>
-    </div>
+    <section class="section" id="relations" aria-labelledby="rel-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">02</span><h2 id="rel-h">Relationship arbitrage</h2>
+        <p>Jev reads both rulebooks and says how two markets are logically related; arithmetic checks whether prices break it.</p>
+      </div>
+      <div class="ledger" data-reveal>
+        <div class="stats-row" id="rel-stats"></div>
+        <div class="cell"><div class="table-wrap" id="rel-table"></div></div>
+      </div>
+    </section>
 
-    <div class="panel full">
-      <h2>Stat-arb paper book -- equity curve (mark-to-market)</h2>
-      <div id="paper-stats" class="stat-row"></div>
-      <canvas id="paperChart"></canvas>
-    </div>
+    <section class="section" id="positions" aria-labelledby="pos-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">03</span><h2 id="pos-h">Positions &amp; trades</h2>
+        <p>Every paper fill, across all three strategies. Arb legs are bought all together or not at all.</p>
+      </div>
+      <div class="ledger" data-reveal>
+        <div class="cell"><div class="cell-head"><span class="cell-title">Open positions</span></div><div class="table-wrap" id="positions-table"></div></div>
+        <div class="cell"><div class="cell-head"><span class="cell-title">Recent entries &amp; exits</span></div><div class="table-wrap" id="paper-table"></div></div>
+      </div>
+    </section>
 
-    <div class="panel full">
-      <h2>Relationship arbitrage -- event markets (Jev-judged relations)</h2>
-      <div id="rel-stats" class="stat-row"></div>
-      <div id="rel-table"></div>
-    </div>
+    <section class="section" id="sports" aria-labelledby="sports-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">04</span><h2 id="sports-h">Sports: Kalshi vs. the books</h2>
+        <p>Kalshi moneylines against de-vigged sportsbook consensus and Polymarket, matched game-by-game by Jev.</p>
+      </div>
+      <div class="ledger halves" data-reveal>
+        <div class="cell">
+          <div class="cell-head"><span class="cell-title">Divergence distribution</span></div>
+          <div class="stats-row" id="cv-stats" style="margin-top:12px"></div>
+          <div class="chart-box mid"><canvas id="diffChart" role="img" aria-label="Histogram of cross-venue price divergence"></canvas></div>
+        </div>
+        <div class="cell"><div class="cell-head"><span class="cell-title">Biggest disagreements</span></div><div class="table-wrap" id="cv-table"></div></div>
+      </div>
+    </section>
 
-    <div class="panel full">
-      <h2>Open paper positions</h2>
-      <div id="positions-table"></div>
-    </div>
+    <section class="section" id="system" aria-labelledby="sys-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">05</span><h2 id="sys-h">System</h2>
+        <p>The loop on the server: each cycle's commands and output, newest last.</p>
+      </div>
+      <div class="ledger halves" data-reveal>
+        <div class="cell"><div class="cell-head"><span class="cell-title">Loop activity</span><span class="cell-tag" id="loop-last">--</span></div><pre class="log" id="loop-log"></pre></div>
+        <div class="cell"><div class="cell-head"><span class="cell-title">Jev predictions (research log)</span><span class="cell-tag" id="brier-tag">--</span></div><div class="table-wrap" id="pred-table"></div></div>
+      </div>
+    </section>
+  </main>
 
-    <div class="panel full">
-      <h2>Biggest cross-venue disagreements (logged)</h2>
-      <div id="cv-table"></div>
-    </div>
+  <footer>
+    <span>PTERNAS &middot; PAPER TRADING ONLY &middot; NO REAL ORDERS ARE EVER PLACED</span>
+    <span id="footer-updated">--</span>
+  </footer>
+</div>
 
-    <div class="panel full">
-      <h2>Recent paper trades (entries &amp; exits)</h2>
-      <div id="paper-table"></div>
-    </div>
-
-    <div class="panel full">
-      <h2>Recent Jev predictions</h2>
-      <div id="pred-table"></div>
-    </div>
-
-    <div class="panel full">
-      <h2>Recent loop activity</h2>
-      <pre class="log" id="loop-log"></pre>
-    </div>
-
-  </div>
-
-  <footer>Auto-refreshes every 60s. Detection and paper-trading only -- nothing here places a real order.</footer>
-
-<script>
-let brierChart, diffChart, paperChart;
-
-function fmtPct(x) { return x === null || x === undefined ? '--' : (x * 100).toFixed(1) + '%'; }
-function fmtNum(x, d=4) { return x === null || x === undefined ? '--' : x.toFixed(d); }
-function timeAgo(iso) {
-  if (!iso) return '--';
-  const s = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (s < 60) return Math.floor(s) + 's ago';
-  if (s < 3600) return Math.floor(s/60) + 'm ago';
-  if (s < 86400) return Math.floor(s/3600) + 'h ago';
-  return Math.floor(s/86400) + 'd ago';
-}
-
-async function refresh() {
-  const res = await fetch('/api/summary');
-  const data = await res.json();
-  document.getElementById('updated').textContent = 'updated ' + timeAgo(data.generated_at);
-
-  renderLoopHealth(data.loop_health);
-  renderPredictions(data.predictions);
-  renderCrossVenue(data.cross_venue);
-  renderPaper(data.paper_trading);
-  renderRelations(data.relations);
-}
-
-function renderRelations(r) {
-  document.getElementById('rel-stats').innerHTML = `
-    <div class="stat"><div class="n">${r.pairs_judged}</div><div class="l">market pairs judged by Jev</div></div>
-    <div class="stat"><div class="n">${r.opportunities_logged}</div><div class="l">priced opportunities logged</div></div>
-    <div class="stat"><div class="n">${r.tradeable_logged}</div><div class="l">tradeable</div></div>
-    <div class="stat"><div class="n">${r.traded}</div><div class="l">paper-traded</div></div>
-  `;
-  const el = document.getElementById('rel-table');
-  if (!r.recent.length) {
-    el.innerHTML = '<div class="empty">no price violations of a Jev-confirmed relation yet -- expected to be rare</div>';
-    return;
-  }
-  el.innerHTML = '<table><tr><th>Relation</th><th>Legs</th><th>Edge / set</th><th>Qty</th><th>Status</th><th>When</th></tr>' +
-    r.recent.map(a => `<tr><td>${a.kind}</td><td style="white-space:normal;">${a.legs.join('<br>')}</td>` +
-      `<td ${pnlStyle(a.edge_per_set)}>${fmtUsd(a.edge_per_set)}</td><td>${a.qty}</td>` +
-      `<td style="max-width:260px;white-space:normal;">${a.traded ? '<span class="pill good">PAPER-TRADED</span>' : (a.note || '')}</td>` +
-      `<td>${timeAgo(a.logged_at)}</td></tr>`).join('') + '</table>';
-}
-
-function renderLoopHealth(h) {
-  const el = document.getElementById('loop-health');
-  if (!h.last_line_at) {
-    el.innerHTML = '<div class="empty">run_loop.py hasn\'t logged anything yet</div>';
-    document.getElementById('loop-log').textContent = '';
-    return;
-  }
-  const pill = h.stale ? '<span class="pill stale">STALE</span>' : '<span class="pill live">LIVE</span>';
-  el.innerHTML = `<div class="stat-row"><div class="stat"><div class="n">${pill}</div><div class="l">last activity: ${timeAgo(h.last_line_at)}</div></div></div>`;
-  document.getElementById('loop-log').textContent = h.recent_lines.join('\n');
-}
-
-function renderPredictions(p) {
-  const stats = document.getElementById('brier-stats');
-  stats.innerHTML = `
-    <div class="stat"><div class="n">${p.total_logged}</div><div class="l">total logged</div></div>
-    <div class="stat"><div class="n">${p.total_real_jev_calls}</div><div class="l">real Jev calls</div></div>
-    <div class="stat"><div class="n">${p.total_scored}</div><div class="l">settled &amp; scored</div></div>
-    <div class="stat"><div class="n">${fmtNum(p.jev_brier)}</div><div class="l">Jev Brier</div></div>
-    <div class="stat"><div class="n">${fmtNum(p.market_brier)}</div><div class="l">market Brier</div></div>
-  `;
-
-  const ctx = document.getElementById('brierChart');
-  if (!p.brier_trend || p.brier_trend.length === 0) {
-    ctx.style.display = 'none';
-    if (!document.getElementById('brier-empty')) {
-      const div = document.createElement('div');
-      div.id = 'brier-empty'; div.className = 'empty';
-      div.textContent = `Need 10+ settled predictions to chart a trend (have ${p.total_scored})`;
-      ctx.parentElement.appendChild(div);
-    }
-  } else {
-    ctx.style.display = 'block';
-    const old = document.getElementById('brier-empty'); if (old) old.remove();
-    const labels = p.brier_trend.map(r => r.n);
-    const jevData = p.brier_trend.map(r => r.jev_brier);
-    const marketData = p.brier_trend.map(r => r.market_brier);
-    if (brierChart) brierChart.destroy();
-    brierChart = new Chart(ctx, {
-      type: 'line',
-      data: { labels, datasets: [
-        { label: 'Jev', data: jevData, borderColor: '#4f8cff', tension: 0.2, pointRadius: 0 },
-        { label: 'Market', data: marketData, borderColor: '#ff8a4f', tension: 0.2, pointRadius: 0 },
-      ]},
-      options: { responsive: true, scales: { x: { title: { display: true, text: '# settled predictions' } } } }
-    });
-  }
-
-  const table = document.getElementById('pred-table');
-  if (!p.recent.length) { table.innerHTML = '<div class="empty">nothing logged yet</div>'; return; }
-  table.innerHTML = '<table><tr><th>Ticker</th><th>Market</th><th>Jev</th><th>Outcome</th><th>Logged</th></tr>' +
-    p.recent.map(r => `<tr><td>${r.ticker}</td><td>${fmtPct(r.market_prob)}</td><td>${fmtPct(r.jev_prob)}</td>` +
-      `<td>${r.outcome === null ? '<span class="pill">pending</span>' : (r.outcome ? '<span class="pill good">YES</span>' : '<span class="pill bad">NO</span>')}</td>` +
-      `<td>${timeAgo(r.logged_at)}</td></tr>`).join('') + '</table>';
-}
-
-function renderCrossVenue(c) {
-  const stats = document.getElementById('cv-stats');
-  stats.innerHTML = `
-    <div class="stat"><div class="n">${c.total_logged}</div><div class="l">comparisons logged</div></div>
-    <div class="stat"><div class="n">${fmtPct(c.avg_diff)}</div><div class="l">avg divergence</div></div>
-    <div class="stat"><div class="n">${fmtPct(c.max_diff)}</div><div class="l">max divergence</div></div>
-    <div class="stat"><div class="n">${Object.keys(c.by_league).length}</div><div class="l">leagues</div></div>
-  `;
-
-  const ctx = document.getElementById('diffChart');
-  if (!c.total_logged) {
-    ctx.style.display = 'none';
-  } else {
-    ctx.style.display = 'block';
-    const labels = c.histogram_bins.slice(0, -1).map((b, i) => `${(b*100).toFixed(0)}-${(c.histogram_bins[i+1]*100).toFixed(0)}%`);
-    if (diffChart) diffChart.destroy();
-    diffChart = new Chart(ctx, {
-      type: 'bar',
-      data: { labels, datasets: [{ label: 'games', data: c.histogram_counts, backgroundColor: '#4f8cff' }] },
-      options: { responsive: true, plugins: { legend: { display: false } } }
-    });
-  }
-
-  const table = document.getElementById('cv-table');
-  if (!c.top_divergences.length) { table.innerHTML = '<div class="empty">nothing logged yet</div>'; return; }
-  table.innerHTML = '<table><tr><th>League</th><th>Game</th><th>Kalshi</th><th>Diff</th><th>Logged</th></tr>' +
-    c.top_divergences.map(r => `<tr><td>${(r.league||'').toUpperCase()}</td><td>${r.kalshi_event_ticker}</td>` +
-      `<td>${JSON.stringify(r.kalshi_probs)}</td><td>${fmtPct(r.diff)}</td><td>${timeAgo(r.logged_at)}</td></tr>`).join('') + '</table>';
-}
-
-function fmtUsd(x) {
-  if (x === null || x === undefined) return '--';
-  return (x < 0 ? '-$' : '$') + Math.abs(x).toFixed(2);
-}
-function pnlStyle(x) { return x === null || x === undefined ? '' : `style="color:var(--${x >= 0 ? 'good' : 'bad'})"`; }
-
-function renderPaper(p) {
-  const stats = document.getElementById('paper-stats');
-  const pnl = p.pnl_summary || {};
-  const sa = (pnl.by_strategy || {}).stat_arb || {};
-  const ra = (pnl.by_strategy || {}).relation_arb || {};
-  const closed = pnl.closed_count || 0;
-  const winRate = closed ? fmtPct((pnl.wins || 0) / closed) : '--';
-  stats.innerHTML = `
-    <div class="stat"><div class="n" ${pnlStyle(pnl.total_pnl)}>${fmtUsd(pnl.total_pnl)}</div><div class="l">total PnL (realized + marked)</div></div>
-    <div class="stat"><div class="n" ${pnlStyle(pnl.realized_pnl)}>${fmtUsd(pnl.realized_pnl)}</div><div class="l">realized</div></div>
-    <div class="stat"><div class="n" ${pnlStyle(pnl.unrealized_pnl)}>${fmtUsd(pnl.unrealized_pnl)}</div><div class="l">unrealized (at bid, net of exit fee)</div></div>
-    <div class="stat"><div class="n" ${pnlStyle(sa.total_pnl)}>${fmtUsd(sa.total_pnl)}</div><div class="l">stat-arb only</div></div>
-    <div class="stat"><div class="n" ${pnlStyle(ra.total_pnl)}>${fmtUsd(ra.total_pnl)}</div><div class="l">relation-arb only</div></div>
-    <div class="stat"><div class="n">${fmtUsd(pnl.open_cost)}</div><div class="l">capital at risk</div></div>
-    <div class="stat"><div class="n">${pnl.open_count ?? '--'}</div><div class="l">open positions</div></div>
-    <div class="stat"><div class="n">${closed}</div><div class="l">closed (win rate ${winRate})</div></div>
-    <div class="stat"><div class="n">${p.total_fills} / ${p.total_exits}</div><div class="l">entries / exits</div></div>
-    <div class="stat"><div class="n">${p.total_vetoes}</div><div class="l">risk-gate vetoes</div></div>
-  `;
-
-  const ctx = document.getElementById('paperChart');
-  const curve = p.equity_curve || [];
-  if (curve.length === 0) {
-    ctx.style.display = 'none';
-    if (!document.getElementById('paper-empty')) {
-      const div = document.createElement('div');
-      div.id = 'paper-empty'; div.className = 'empty';
-      div.textContent = p.total_fills
-        ? 'equity curve starts at the next scoring pass (score_paper_fills.py runs every loop cycle)'
-        : 'no paper trades yet';
-      ctx.parentElement.appendChild(div);
-    }
-  } else {
-    ctx.style.display = 'block';
-    const old = document.getElementById('paper-empty'); if (old) old.remove();
-    const labels = curve.map(r => new Date(r.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
-    if (paperChart) paperChart.destroy();
-    paperChart = new Chart(ctx, {
-      data: { labels, datasets: [
-        { type: 'line', label: 'Total PnL (mark-to-market)', data: curve.map(r => r.total_pnl), borderColor: '#4f8cff', backgroundColor: 'rgba(79,140,255,.12)', fill: 'origin', tension: 0.15, pointRadius: curve.length > 40 ? 0 : 2, yAxisID: 'y' },
-        { type: 'line', label: 'Realized PnL', data: curve.map(r => r.realized_pnl), borderColor: '#3ecf8e', tension: 0.15, pointRadius: 0, yAxisID: 'y' },
-        { type: 'line', label: 'Stat-arb PnL', data: curve.map(r => r.stat_arb_pnl ?? null), borderColor: '#ff8a4f', borderDash: [5, 4], tension: 0.15, pointRadius: 0, yAxisID: 'y' },
-        { type: 'line', label: 'Relation-arb PnL', data: curve.map(r => r.relation_arb_pnl ?? null), borderColor: '#c77dff', borderDash: [2, 3], tension: 0.15, pointRadius: 0, yAxisID: 'y' },
-        { type: 'line', label: 'Capital at risk', data: curve.map(r => r.open_cost), borderColor: 'rgba(139,147,163,.6)', borderWidth: 1, stepped: true, pointRadius: 0, yAxisID: 'y2' },
-      ]},
-      options: {
-        responsive: true,
-        interaction: { mode: 'index', intersect: false },
-        plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtUsd(c.parsed.y)}` } } },
-        scales: {
-          y: { grace: '15%', title: { display: true, text: 'PnL ($)' }, ticks: { callback: v => fmtUsd(v) } },
-          y2: { position: 'right', beginAtZero: true, grace: '25%', grid: { drawOnChartArea: false }, title: { display: true, text: 'capital at risk ($)' } },
-          x: { ticks: { maxTicksLimit: 10 } },
-        },
-      },
-    });
-  }
-
-  const posTable = document.getElementById('positions-table');
-  const open = (pnl.positions || []).filter(r => r.status === 'open');
-  if (open.length === 0) {
-    posTable.innerHTML = '<div class="empty">no open positions</div>';
-  } else {
-    posTable.innerHTML = '<table><tr><th>Ticker</th><th>Strategy</th><th>Side</th><th>Qty</th><th>Avg cost</th><th>Mark (bid)</th><th>Unrealized</th><th>Opened</th></tr>' +
-      open.map(r => `<tr><td>${r.ticker}</td><td>${r.strategy}${r.venue ? ' / ' + r.venue : ''}</td><td>${(r.side||'').toUpperCase()}</td>` +
-        `<td>${r.qty_open}</td><td>${fmtPct(r.avg_cost)}</td><td>${fmtPct(r.mark)}</td>` +
-        `<td ${pnlStyle(r.unrealized_pnl)}>${fmtUsd(r.unrealized_pnl)}</td><td>${timeAgo(r.opened_at)}</td></tr>`).join('') + '</table>';
-  }
-
-  const table = document.getElementById('paper-table');
-  if (!p.recent_fills || p.recent_fills.length === 0) {
-    table.innerHTML = '<div class="empty">no paper trades yet</div>';
-  } else {
-    table.innerHTML = '<table><tr><th>Action</th><th>Ticker</th><th>Strategy</th><th>Side</th><th>Qty</th><th>Price</th><th>Fair</th><th>Cost / PnL</th><th>Reason</th><th>When</th></tr>' +
-      p.recent_fills.map(f => {
-        const isSell = f.action === 'sell';
-        const money = isSell ? `<span ${pnlStyle(f.pnl_usd)}>${fmtUsd(f.pnl_usd)}</span>` : fmtUsd(f.cost_usd);
-        return `<tr><td><span class="pill ${isSell ? 'good' : ''}">${isSell ? 'EXIT' : 'ENTER'}</span></td><td>${f.ticker}</td>` +
-          `<td>${f.strategy}</td><td>${(f.side||'').toUpperCase()}</td><td>${f.qty ?? ''}</td>` +
-          `<td>${fmtPct(f.price)}</td><td>${fmtPct(f.fair)}</td><td>${money}</td>` +
-          `<td style="max-width:320px;white-space:normal;">${f.reason||''}</td><td>${timeAgo(f.ts)}</td></tr>`;
-      }).join('') + '</table>';
-  }
-}
-
-refresh();
-setInterval(refresh, 60000);
-</script>
+<script type="module" src="/assets/app.js?v=2"></script>
 </body>
 </html>

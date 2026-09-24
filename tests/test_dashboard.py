@@ -12,7 +12,7 @@ def test_index_page_loads():
     client = app.test_client()
     resp = client.get("/")
     assert resp.status_code == 200
-    assert b"Kalshi Engine Dashboard" in resp.data
+    assert b"<title>Pternas</title>" in resp.data
 
 
 def test_api_summary_returns_expected_shape():
