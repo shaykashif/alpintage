@@ -10,8 +10,8 @@
 #   bash deploy/setup.sh
 #
 # This script: installs git if missing, installs uv, syncs the Python
-# environment, prompts you to fill in .env, installs the two systemd
-# services (paper-only loop + dashboard), and opens the dashboard port in
+# environment, prompts you to fill in .env, installs the three systemd
+# services (paper-only loop, relation price watcher, dashboard), and opens the dashboard port in
 # the instance's own firewall. It does NOT touch Oracle Cloud's separate
 # cloud-level firewall (Security List / Network Security Group) -- that's a
 # console/account-level setting you have to open yourself; see DEPLOY.md.
@@ -110,9 +110,11 @@ fi
 # --- systemd services ---
 echo "Installing systemd services..."
 sed "s#/opt/alpintage#$REPO_DIR#g" deploy/kalshi-loop.service | sudo tee /etc/systemd/system/kalshi-loop.service >/dev/null
+sed "s#/opt/alpintage#$REPO_DIR#g" deploy/kalshi-watcher.service | sudo tee /etc/systemd/system/kalshi-watcher.service >/dev/null
 sed "s#/opt/alpintage#$REPO_DIR#g" deploy/kalshi-dashboard.service | sudo tee /etc/systemd/system/kalshi-dashboard.service >/dev/null
 sudo systemctl daemon-reload
 sudo systemctl enable --now kalshi-loop.service
+sudo systemctl enable --now kalshi-watcher.service
 sudo systemctl enable --now kalshi-dashboard.service
 
 # --- instance-level firewall ---
@@ -133,6 +135,7 @@ fi
 echo
 echo "Done. Check status with:"
 echo "  systemctl status kalshi-loop.service"
+echo "  systemctl status kalshi-watcher.service"
 echo "  systemctl status kalshi-dashboard.service"
 echo "  journalctl -u kalshi-loop.service -f"
 echo

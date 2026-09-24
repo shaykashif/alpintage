@@ -228,6 +228,27 @@ def relation_summary(recent_n: int = 25) -> dict:
     }
 
 
+LIVE_STALE_S = 30  # the watcher writes every ~3 s; older than this, it isn't running
+
+
+def relation_live() -> dict:
+    """The watcher's latest price check of every confirmed relation (see
+    scripts/run_relation_watcher.py). `running` is False when the file is
+    missing or stale, so the page never shows old prices as live."""
+    path = DATA_DIR / "relation_live.json"
+    try:
+        live = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"running": False, "rows": []}
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(live["generated_at"])).total_seconds()
+    except (KeyError, ValueError):
+        age = None
+    live["age_s"] = age
+    live["running"] = age is not None and age <= LIVE_STALE_S
+    return live
+
+
 def loop_health() -> dict:
     log_path = DATA_DIR / "loop.log"
     if not log_path.exists():

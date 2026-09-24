@@ -1,5 +1,8 @@
 """Serves the dashboard: GET / renders the page, GET /api/summary returns
-the current data as JSON (dashboard_data.py, read-only, no live API calls).
+the current data as JSON (dashboard_data.py, read-only, no live API calls),
+and GET /api/live returns the relation watcher's latest price check
+(data/relation_live.json, rewritten every few seconds), which the page
+polls far more often than the full summary.
 
 Runs open with no authentication by default, per the project owner's choice
 -- no secrets or real money are exposed by this data, but anyone who has the
@@ -28,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from flask import Flask, Response, jsonify, send_from_directory  # noqa: E402
 
-from kalshi_engine.dashboard_data import full_summary  # noqa: E402
+from kalshi_engine.dashboard_data import full_summary, relation_live  # noqa: E402
 
 DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
 
@@ -95,6 +98,11 @@ def manifest():
 @app.route("/api/summary")
 def api_summary():
     return jsonify(full_summary())
+
+
+@app.route("/api/live")
+def api_live():
+    return jsonify(relation_live())
 
 
 def main() -> None:

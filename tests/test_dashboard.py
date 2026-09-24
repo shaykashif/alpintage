@@ -45,3 +45,21 @@ def test_seo_and_icon_routes():
     assert client.get("/assets/brand/og-image.png").status_code == 200
     manifest = client.get("/site.webmanifest").get_json()
     assert manifest["name"] == "Pternas" and len(manifest["icons"]) == 2
+
+
+def test_api_live_reports_running_only_when_fresh(tmp_path, monkeypatch):
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from kalshi_engine import dashboard_data
+
+    monkeypatch.setattr(dashboard_data, "DATA_DIR", tmp_path)
+    client = app.test_client()
+    assert client.get("/api/live").get_json() == {"running": False, "rows": []}
+
+    row = {"id": "A|PM-b", "status": "violation", "edge": 0.1}
+    for age, running in ((1, True), (300, False)):
+        ts = (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()
+        (tmp_path / "relation_live.json").write_text(json.dumps({"generated_at": ts, "rows": [row]}))
+        data = client.get("/api/live").get_json()
+        assert data["running"] is running and data["rows"] == [row]

@@ -26,6 +26,8 @@ Each run:
   6. Write data/relation_comparisons.json: every pair Jev judged this run,
      with its verdict and whether prices currently honour it -- what the
      dashboard's comparisons table shows, violations or not.
+  7. Write data/relation_watchlist.json: every confirmed relation, which
+     run_relation_watcher.py re-prices every few seconds between scans.
 
 Never places a real order anywhere.
 
@@ -37,6 +39,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,6 +53,9 @@ from dotenv import load_dotenv  # noqa: E402
 from kalshi_engine import ledger, relations  # noqa: E402
 from kalshi_engine.jev_client import ask_noul_multi  # noqa: E402
 from kalshi_engine.paper_broker import PaperBroker  # noqa: E402
+from kalshi_engine.relation_trading import (  # noqa: E402
+    ARBS_PATH, STRATEGY, append_arb_rows, arb_row, execute, price_relations, settled_payouts, write_watchlist,
+)
 from kalshi_engine.relation_sources import (  # noqa: E402
     fetch_kalshi_events, fetch_polymarket_events, kalshi_contracts, polymarket_contracts, topic_subjects,
 )
@@ -57,12 +63,10 @@ from kalshi_engine.topics import TopicClassifier  # noqa: E402
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 CACHE_PATH = DATA / "relations_cache.jsonl"
-ARBS_PATH = DATA / "relation_arbs.jsonl"
 COMPARISONS_PATH = DATA / "relation_comparisons.json"
 MAX_COMPARISON_ROWS = 600  # the dashboard ships this file every minute -- keep it bounded
-SUMMARY_PATH = DATA / "paper_pnl_summary.json"
 
-STRATEGY = "relation_arb"
+__all__ = ["ARBS_PATH", "STRATEGY", "execute"]  # re-exported: tests and older callers import them from here
 
 
 def load_cache(path: Path = CACHE_PATH) -> dict[str, dict]:
@@ -133,71 +137,17 @@ def classify_pairs(pairs, cache: dict, max_new: int, workers: int) -> dict[str, 
     return cache
 
 
-def arb_row(arb: relations.Arb, verdict: dict | None) -> dict:
-    return {
-        "logged_at": datetime.now(timezone.utc).isoformat(),
-        "kind": arb.kind,
-        "legs": [{"venue": l.contract.venue, "ticker": l.contract.ticker, "side": l.side, "price": l.price,
-                  "title": l.contract.title} for l in arb.legs],
-        "qty": arb.qty,
-        "payout_per_set": arb.payout_per_set,
-        "cost_per_set": arb.cost_per_set,
-        "edge_per_set": arb.edge_per_set,
-        "fees_usd": arb.fees_usd,
-        "tradeable": arb.tradeable,
-        "reason": arb.reason,
-        "jev_probs": verdict["probs"] if verdict else None,
-        "traded": False,
-    }
-
-
-def execute(arb: relations.Arb, broker: PaperBroker, held: set[str], verdict: dict | None) -> tuple[bool, str]:
-    """Buy every leg or none. A half-filled arb is a directional bet -- the
-    exact failure behind the Sep 23 bracket losses -- so every check that
-    could veto a leg runs BEFORE the first buy."""
-    tickers = [l.contract.ticker for l in arb.legs]
-    if any(t in held for t in tickers):
-        return False, "already hold a leg"
-    notional = sum(l.price * arb.qty for l in arb.legs)
-    if notional + arb.fees_usd > broker.cash_usd:
-        return False, "insufficient paper cash for the whole set"
-    if broker._total_exposure_usd() + notional > broker.limits.max_total_exposure_usd:
-        return False, "whole set would breach max_total_exposure_usd"
-    if any(l.price * arb.qty > broker.limits.max_order_notional_usd for l in arb.legs):
-        return False, "a leg exceeds max_order_notional_usd"
-    if broker.limits.kill_switch_path.exists():
-        return False, "kill switch active"
-    if broker.realized_pnl_today_usd <= -broker.limits.max_daily_loss_usd:
-        return False, "daily loss limit reached"
-
-    group = f"{arb.kind}:{'|'.join(tickers)}"
-    for leg in arb.legs:
-        fee = None if leg.contract.venue == "kalshi" else leg.contract.fee(arb.qty, leg.price)
-        broker.buy(
-            leg.contract.ticker, leg.side, leg.price, qty=arb.qty, fee_usd=fee,
-            reason=f"relation arb ({arb.kind}), edge={arb.edge_per_set:.3f}/set",
-            strategy=STRATEGY, venue=leg.contract.venue, relation=arb.kind, arb_group=group,
-            edge=arb.edge_per_set, jev_probs=verdict["probs"] if verdict else None,
-        )
-        held.add(leg.contract.ticker)
-    return True, "filled"
-
-
 def comparison_row(a: relations.Contract, b: relations.Contract, verdict: dict, rels: list[str],
-                   why_not: str | None, arbs: list) -> dict:
+                   why_not: str | None) -> tuple[dict, list[relations.Arb]]:
     """One judged pair for the dashboard's comparisons table -- shown whether
-    or not its prices break anything."""
+    or not its prices break anything -- plus its priced arbitrage sets."""
     probs = verdict.get("probs", {})
     best = max(relations.RELATIONS, key=lambda r: probs.get(r, 0.0))
+    arbs: list[relations.Arb] = []
     if rels:
-        priced = [x for x in arbs if x is not None]
-        if not priced:
-            status, edge = "unpriced", None
-            gaps = sorted({g for rel in rels for g in relations.missing_quotes(rel, a, b)})
-            why_not = "; ".join(gaps) or why_not
-        else:
-            edge = max(x.edge_per_set for x in priced)
-            status = "violation" if edge > 0 else "consistent"
+        priced = price_relations(a, b, rels)
+        status, edge, arbs = priced["status"], priced["edge"], priced["arbs"]
+        why_not = priced["note"] or why_not
     else:
         edge = None
         status = "near miss" if probs.get(best, 0.0) >= 0.7 else "unrelated"
@@ -210,7 +160,7 @@ def comparison_row(a: relations.Contract, b: relations.Contract, verdict: dict, 
         "best": {"relation": best, "prob": round(probs.get(best, 0.0), 3)},
         "gate": round(probs.get("same_underlying", 0.0), 3),
         "status": status, "edge": edge, "asked_at": verdict.get("asked_at"),
-    }
+    }, arbs
 
 
 _STATUS_ORDER = {"violation": 0, "consistent": 1, "unpriced": 2, "near miss": 3, "unrelated": 4}
@@ -231,16 +181,6 @@ def write_comparisons(rows: list[dict], universe: dict, total_judged: int) -> No
         "universe": universe,
         "rows": rows[:MAX_COMPARISON_ROWS],
     }), encoding="utf-8")
-
-
-def _settled_payouts() -> dict[str, float]:
-    if not SUMMARY_PATH.exists():
-        return {}
-    try:
-        summary = json.loads(SUMMARY_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    return {p["ticker"]: p.get("payout", 0.0) for p in summary.get("positions", []) if p.get("status") == "settled"}
 
 
 def main() -> None:
@@ -290,6 +230,7 @@ def main() -> None:
 
     opportunities: list[tuple[relations.Arb, dict | None]] = []
     comparisons: list[dict] = []
+    watch: list[tuple[relations.Contract, relations.Contract, list[str], dict]] = []
     confirmed = near_miss = inconsistent = 0
     for a, b, _score in pairs:
         verdict = cache.get(relations.pair_key(a, b))
@@ -298,16 +239,19 @@ def main() -> None:
         rels, why_not = verdict_relations(verdict, args.threshold, args.gate_threshold)
         if why_not and why_not.startswith("inconsistent"):
             inconsistent += 1
-        arbs = [relations.relation_arb(rel, a, b) for rel in rels]
-        comparisons.append(comparison_row(a, b, verdict, rels, why_not, arbs))
+        row, arbs = comparison_row(a, b, verdict, rels, why_not)
+        comparisons.append(row)
         if not rels:
             if max(verdict["probs"][r] for r in relations.RELATIONS) >= 0.7:
                 near_miss += 1
             continue
         confirmed += 1
+        watch.append((a, b, rels, verdict))
         print(f"  RELATION {rels}: {a.ticker} <-> {b.ticker}")
-        opportunities += [(arb, verdict) for arb in arbs if arb is not None and arb.edge_per_set > 0]
+        opportunities += [(arb, verdict) for arb in arbs if arb.edge_per_set > 0]
     write_comparisons(comparisons, universe, total_judged=len(cache))
+    # The fast loop (run_relation_watcher.py) re-prices exactly these pairs every few seconds.
+    write_watchlist(watch)
 
     by_event: dict[str, list[relations.Contract]] = {}
     for c in contracts:
@@ -318,30 +262,27 @@ def main() -> None:
         if arb is not None and arb.edge_per_set > 0:
             opportunities.append((arb, None))
 
-    broker, held = None, set()
-    if args.paper:
-        settled = _settled_payouts()
-        broker = PaperBroker.from_ledger(settled=settled)
-        held = set(broker.positions)
-        print(f"[book] cash ${broker.cash_usd:.2f}, {len(held)} open position(s)")
-
     rows = []
     opportunities.sort(key=lambda o: o[0].edge_per_set, reverse=True)
-    for arb, verdict in opportunities:
-        row = arb_row(arb, verdict)
-        legs_txt = " + ".join(f"{l.side.upper()} {l.contract.ticker} @{l.price:.2f}" for l in arb.legs)
-        status = "tradeable" if arb.tradeable else f"skip ({arb.reason})"
-        if broker is not None and arb.tradeable:
-            ok, why = execute(arb, broker, held, verdict)
-            row["traded"], row["trade_note"] = ok, why
-            status = "PAPER-TRADED" if ok else f"not traded ({why})"
-        print(f"  [{arb.kind}] edge ${arb.edge_per_set:.3f}/set x{arb.qty}: {legs_txt} -- {status}")
-        rows.append(row)
-
-    if rows:
-        with ARBS_PATH.open("a", encoding="utf-8") as f:
-            for row in rows:
-                f.write(json.dumps(row) + "\n")
+    # The watcher trades from the same ledger every few seconds: hold the
+    # lock from reading the book to the last buy so neither double-buys.
+    with ledger.ledger_lock() if args.paper else contextlib.nullcontext():
+        broker, held = None, set()
+        if args.paper:
+            broker = PaperBroker.from_ledger(settled=settled_payouts())
+            held = set(broker.positions)
+            print(f"[book] cash ${broker.cash_usd:.2f}, {len(held)} open position(s)")
+        for arb, verdict in opportunities:
+            row = arb_row(arb, verdict)
+            legs_txt = " + ".join(f"{l.side.upper()} {l.contract.ticker} @{l.price:.2f}" for l in arb.legs)
+            status = "tradeable" if arb.tradeable else f"skip ({arb.reason})"
+            if broker is not None and arb.tradeable:
+                ok, why = execute(arb, broker, held, verdict)
+                row["traded"], row["trade_note"] = ok, why
+                status = "PAPER-TRADED" if ok else f"not traded ({why})"
+            print(f"  [{arb.kind}] edge ${arb.edge_per_set:.3f}/set x{arb.qty}: {legs_txt} -- {status}")
+            rows.append(row)
+    append_arb_rows(rows)
 
     tradeable = sum(1 for arb, _ in opportunities if arb.tradeable)
     print(f"\n{confirmed} pair(s) with a Jev-confirmed relation (>= {args.threshold}); {near_miss} near miss(es) "

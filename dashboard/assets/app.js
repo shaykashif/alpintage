@@ -1,11 +1,13 @@
 // Pternas dashboard: the cultural & economic relationship-arbitrage book.
 // Renders /api/summary (read-only; no live API calls server-side) and
-// refreshes every 60s. Motion via anime.js v4; every animation is skipped
+// refreshes every 60s; the comparisons table's price checks also update
+// every few seconds from /api/live (the relation watcher's latest pass). Motion via anime.js v4; every animation is skipped
 // under prefers-reduced-motion.
 import { animate, stagger } from "https://cdn.jsdelivr.net/npm/animejs@4.5.0/+esm";
 import { DotField, FiberHelix, Lcd } from "/assets/visuals.js?v=6";
 
 const REFRESH_MS = 60_000;
+const LIVE_MS = 3_000;
 const STRATEGY = "relation_arb";
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const $ = (id) => document.getElementById(id);
@@ -307,6 +309,23 @@ function marketCell(m) {
   return `<td class="mkt"><div class="t">${esc(m.title)}</div><div class="m">${esc(m.venue)} · ${esc(m.topic || "")} · ${esc(m.ticker)}</div></td>`;
 }
 
+// Live overlay: pair id ("A|B") -> the watcher's latest {status, edge, note}.
+// Only confirmed relations are watched; other rows keep their scan values.
+let live = { running: false, byPair: new Map(), at: null };
+const pairId = (r) => `${r.a.ticker}|${r.b.ticker}`;
+function current(r) {
+  const l = r.relations.length && live.running ? live.byPair.get(pairId(r)) : null;
+  return l ? { ...r, status: l.status, edge: l.edge, note: l.note, live: true } : r;
+}
+function priceCell(r) {
+  const val = r.edge === null || r.edge === undefined ? "—" : esc(usd(r.edge)) + "/set";
+  const why = r.status === "unpriced" && r.note ? `<span class="why">${esc(r.note)}</span>` : "";
+  return `${val}${why}`;
+}
+function liveTag() {
+  return live.running ? ` · <span class="live-dot" aria-hidden="true"></span>prices live, checked ${esc(ago(live.at))}` : "";
+}
+
 function renderComparisons(d) {
   const c = (d.relations || {}).comparisons;
   const el = $("cmp-table");
@@ -330,22 +349,22 @@ function renderComparisons(d) {
   ];
   $("cmp-stats").innerHTML = stats.map(([k], i) => `<div class="kv"><div class="k">${esc(k)}</div><div class="v num" id="cmp-stat-${i}">--</div></div>`).join("");
   stats.forEach(([, v], i) => countTo($(`cmp-stat-${i}`), v ?? 0, (x) => Math.round(x ?? 0).toLocaleString()));
-  $("cmp-tag").textContent = `${topicCount("cultural").toLocaleString()} cultural · ${topicCount("economic").toLocaleString()} economic · ${topicCount("geopolitical").toLocaleString()} geopolitical markets · scanned ${ago(c.generated_at)}`;
+  $("cmp-tag").innerHTML = esc(`${topicCount("cultural").toLocaleString()} cultural · ${topicCount("economic").toLocaleString()} economic · ${topicCount("geopolitical").toLocaleString()} geopolitical markets · scanned ${ago(c.generated_at)}`) + liveTag();
 
   const f = cmpState.filter;
   const match = { all: () => true, related: (r) => r.relations.length > 0, cross: (r) => r.a.venue !== r.b.venue };
-  const rows = (c.rows || []).filter(match[f] || ((r) => r.status === f));
+  const rows = (c.rows || []).map(current).filter(match[f] || ((r) => r.status === f));
   const shownRows = rows.slice(0, cmpState.limit);
   el.innerHTML = shownRows.length
     ? table(
         [["Status"], ["Market A"], ["Relation"], ["Market B"], ["Same thing", "num"], ["Price check", "num"], ["Judged", "num"]],
-        shownRows.map((r) => `<tr>
-          <td>${STATUS_TAG[r.status] || esc(r.status)}</td>
+        shownRows.map((r) => `<tr data-pair="${esc(pairId(r))}">
+          <td class="st">${STATUS_TAG[r.status] || esc(r.status)}</td>
           ${marketCell(r.a)}
           <td class="rel">${esc(relationLabel(r))}<span class="p">${r.relations.length ? "" : "closest: " + esc(REL_LABEL[r.best.relation] || r.best.relation) + " "}${esc(pct(r.best.prob, 0))}</span></td>
           ${marketCell(r.b)}
           <td class="num">${esc(pct(r.gate, 0))}</td>
-          <td class="num ${r.status === "violation" ? "pos" : ""}" title="best set's guaranteed profit at current prices; negative = how far from a violation">${r.edge === null || r.edge === undefined ? "—" : esc(usd(r.edge)) + "/set"}${r.status === "unpriced" && r.note ? `<span class="why">${esc(r.note)}</span>` : ""}</td>
+          <td class="num pc ${r.status === "violation" ? "pos" : ""}" title="best set's guaranteed profit at current prices; negative = how far from a violation">${priceCell(r)}</td>
           <td class="num">${esc(ago(r.asked_at))}</td></tr>`),
       )
     : emptyNote();
@@ -403,6 +422,42 @@ function renderStatus(d) {
   $("loop-status-text").textContent = !h.last_line_at ? "no loop" : live ? "live" : "stale";
 }
 
+// ---- live prices: patch the visible rows in place (no re-render, so row
+// animations don't replay every 3 s) --------------------------------------------------
+function applyLive() {
+  if (!lastData) return;
+  const rows = ((lastData.relations || {}).comparisons || {}).rows || [];
+  const byId = new Map(rows.map((r) => [pairId(r), r]));
+  document.querySelectorAll("#cmp-table tr[data-pair]").forEach((tr) => {
+    const base = byId.get(tr.dataset.pair);
+    if (!base) return;
+    const r = current(base);
+    const pc = tr.querySelector(".pc");
+    const html = priceCell(r);
+    if (pc.innerHTML !== html) {
+      pc.innerHTML = html;
+      pc.classList.toggle("pos", r.status === "violation");
+      if (!reduce) animate(pc, { opacity: [0.35, 1], duration: 500 });
+    }
+    tr.querySelector(".st").innerHTML = STATUS_TAG[r.status] || esc(r.status);
+  });
+  const tag = $("cmp-tag");
+  tag.innerHTML = tag.innerHTML.replace(/ · <span class="live-dot".*$/, "") + liveTag();
+}
+
+async function refreshLive() {
+  if (document.hidden) return; // no polling from a background tab
+  try {
+    const res = await fetch("/api/live", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    live = { running: !!d.running, byPair: new Map((d.rows || []).map((r) => [r.id, r])), at: d.generated_at };
+  } catch {
+    live = { ...live, running: false };
+  }
+  applyLive();
+}
+
 // ---- refresh loop -------------------------------------------------------------------
 async function refresh() {
   try {
@@ -429,5 +484,6 @@ async function refresh() {
 }
 
 applyTheme(currentTheme(), false);
-refresh();
+refresh().then(refreshLive);
 setInterval(refresh, REFRESH_MS);
+setInterval(refreshLive, LIVE_MS);

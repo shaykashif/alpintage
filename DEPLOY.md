@@ -22,7 +22,7 @@ bash deploy/setup.sh
 It detects Oracle Linux (`dnf` + `firewalld`) vs Ubuntu (`apt` + `ufw`)
 automatically. It installs `uv`, syncs the Python environment, walks you
 through creating `.env` (you'll need a `TYPESAFE_API_KEY` and an
-`ODDS_API_KEY`), installs two systemd services, and opens port 8080 in the
+`ODDS_API_KEY`), installs three systemd services, and opens port 8080 in the
 instance's own firewall. `uv` and this project both run fine on Ampere/ARM
 (aarch64) -- no special steps needed for the Always Free Ampere shape.
 
@@ -56,8 +56,10 @@ almost always why.
 
 ```bash
 systemctl status kalshi-loop.service
+systemctl status kalshi-watcher.service
 systemctl status kalshi-dashboard.service
 journalctl -u kalshi-loop.service -f      # live log of the scan loop
+journalctl -u kalshi-watcher.service -f   # live log of the 3-second price checks
 ```
 
 On the box, `curl -s localhost:8080 | head -5` should print the page's HTML.
@@ -69,7 +71,16 @@ Then set up the domain (section "Custom domain" below) and visit
 - **`kalshi-loop.service`** -- `scripts/run_loop.py`, every 30 minutes: the
   relationship-arbitrage scanner (the only strategy that paper-trades by
   default), the ladder/bracket and sports scanners (scan + log only), and
-  scoring. All paper. Logs to `data/*.jsonl` and `data/loop.log`.
+  scoring. All paper. Logs to `data/*.jsonl` and `data/loop.log`. Each
+  relationship scan also writes `data/relation_watchlist.json`: every
+  relation Jev confirmed.
+- **`kalshi-watcher.service`** -- `scripts/run_relation_watcher.py`, every
+  3 seconds: re-quotes only the watchlisted markets (one batched request per
+  venue, not a full re-scan), re-prices every confirmed relation, and
+  paper-trades a violation the moment it appears. Writes
+  `data/relation_live.json`, which the dashboard polls through `/api/live`.
+  It and the scan loop share a lock on the paper ledger, so a violation both
+  see is bought once.
 - **`kalshi-dashboard.service`** -- the Pternas site: `scripts/dashboard_server.py`
   under gunicorn on `127.0.0.1:8080`, reached from the internet through
   Cloudflare Tunnel (next section). Reads the same log files; never calls a
@@ -162,14 +173,22 @@ answering -- expected.
 cd ~/alpintage
 git pull
 uv sync
-sudo systemctl restart kalshi-loop.service kalshi-dashboard.service
+sudo systemctl restart kalshi-loop.service kalshi-watcher.service kalshi-dashboard.service
+```
+
+If the VM was set up before `kalshi-watcher.service` existed, install it once
+(setup.sh substitutes the checkout path for `/opt/alpintage` the same way):
+
+```bash
+sed "s#/opt/alpintage#$HOME/alpintage#g" deploy/kalshi-watcher.service | sudo tee /etc/systemd/system/kalshi-watcher.service >/dev/null
+sudo systemctl daemon-reload && sudo systemctl enable --now kalshi-watcher.service
 ```
 
 ## Turning it off
 
 ```bash
-sudo systemctl stop kalshi-loop.service kalshi-dashboard.service
-sudo systemctl disable kalshi-loop.service kalshi-dashboard.service
+sudo systemctl stop kalshi-loop.service kalshi-watcher.service kalshi-dashboard.service
+sudo systemctl disable kalshi-loop.service kalshi-watcher.service kalshi-dashboard.service
 ```
 
 ## Notes
