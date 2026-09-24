@@ -12,7 +12,7 @@ Two checks, both net of taker fees:
 
        yes_bid(higher strike) > yes_ask(lower strike) + total fees
 
-2. Bracket sum: for a set of mutually exclusive, exhaustive "between" strike
+2. Bracket sum: for the full set of mutually exclusive, exhaustive strike
    buckets covering one event (e.g. temperature range brackets), buying one
    YES contract on every bucket guarantees exactly $1 back. Profitable if:
 
@@ -26,7 +26,7 @@ estimate, not a guarantee it survives at size.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from .fees import taker_fee, total_taker_fee
@@ -128,41 +128,82 @@ class BracketSumViolation:
     sum_yes_ask: float
     fees_usd: float
     edge_usd: float  # guaranteed profit per contract-set, after fees
+    leg_asks: dict[str, float] = field(default_factory=dict)  # ticker -> yes ask to pay
+
+
+_BRACKET_STRIKE_TYPES = {"less", "between", "greater"}
+_STRIKE_TOL = 1e-6
+
+
+def complete_bracket_set(group: list[dict]) -> tuple[list[dict] | None, str]:
+    """The event's FULL outcome set as a list of legs, or (None, why not).
+
+    Buying YES on every leg only guarantees $1 if the legs are exhaustive.
+    Caught live on KXTRUMPAPPROVE-26SEP23: the old check only looked at
+    "between" buckets, skipped the "Below 39.6%" / "Above 40.2%" tails
+    (strike_type less / greater), bought the 7 middle buckets for $0.84,
+    and lost all 7 when the result landed in the "below" tail. It also
+    dropped any bucket without a two-sided quote, which made the "set"
+    even more partial.
+
+    Kalshi's layout, verified on approval-rating and temperature events:
+      less(cap=c0), between(c0..c1), between(c1+step..c2), ..., greater(floor=cN)
+    i.e. exactly one tail each side, the tails meet the first/last bucket,
+    and consecutive buckets are separated by one constant tick. Anything
+    else -- a missing tail, a missing middle bucket (e.g. an event split
+    across listing pages), an irregular gap -- is treated as incomplete.
+    Every leg must also have a real ask, since every leg must be bought."""
+    legs = [m for m in group if m.get("strike_type") in _BRACKET_STRIKE_TYPES]
+    lows = [m for m in legs if m["strike_type"] == "less"]
+    highs = [m for m in legs if m["strike_type"] == "greater"]
+    mids = [m for m in legs if m["strike_type"] == "between"]
+    if not mids:
+        return None, "no bracket buckets"
+    if len(lows) != 1 or len(highs) != 1:
+        return None, f"need exactly one 'below' and one 'above' tail, found {len(lows)} and {len(highs)}"
+    low, high = lows[0], highs[0]
+    if any(_num(m, "floor_strike") is None or _num(m, "cap_strike") is None for m in mids) \
+            or _num(low, "cap_strike") is None or _num(high, "floor_strike") is None:
+        return None, "missing strike bounds"
+
+    mids.sort(key=lambda m: _num(m, "floor_strike"))
+    if abs(_num(low, "cap_strike") - _num(mids[0], "floor_strike")) > _STRIKE_TOL:
+        return None, "'below' tail doesn't meet the lowest bucket"
+    if abs(_num(high, "floor_strike") - _num(mids[-1], "cap_strike")) > _STRIKE_TOL:
+        return None, "'above' tail doesn't meet the highest bucket"
+    gaps = [_num(b, "floor_strike") - _num(a, "cap_strike") for a, b in zip(mids, mids[1:])]
+    if gaps and (min(gaps) <= 0 or max(gaps) - min(gaps) > _STRIKE_TOL):
+        return None, f"buckets not evenly contiguous (gaps {sorted(set(round(g, 6) for g in gaps))})"
+
+    full = [low, *mids, high]
+    for m in full:
+        ask = _num(m, "yes_ask_dollars")
+        if ask is None or ask <= 0 or ask >= 1:
+            return None, f"{m['ticker']} has no tradeable ask"
+    return full, "complete"
 
 
 def find_bracket_sum_violations(markets: list[dict]) -> list[BracketSumViolation]:
-    """Scan every event for "between" (bounded-range) brackets and flag
-    buy-all-YES sums that beat $1 after fees.
-
-    Caveat: this assumes the "between" markets in an event are mutually
-    exclusive AND exhaustive (they cover the whole range with no gaps or
-    overlaps). Kalshi's market objects didn't expose a field confirming that
-    when this was written -- verify against the event/series definition
-    before trusting a flagged violation, especially a large one. A large
-    "edge" here is much more likely to mean the assumption is wrong than
-    that free money exists.
-    """
+    """Scan every event for a complete, exhaustive bracket set (see
+    complete_bracket_set) whose buy-all-YES cost beats $1 after fees.
+    Incomplete sets are never flagged -- a partial set isn't an arbitrage,
+    it's a bet that the result lands inside the legs you bought."""
     out: list[BracketSumViolation] = []
     for event_ticker, group in group_by_event(markets).items():
-        buckets = [
-            m for m in group
-            if m.get("strike_type") == "between"
-            and m.get("floor_strike") is not None
-            and m.get("cap_strike") is not None
-            and has_two_sided_quote(m)
-        ]
-        if len(buckets) < 2:
+        legs, _why = complete_bracket_set(group)
+        if legs is None:
             continue
-        asks = [_num(m, "yes_ask_dollars") for m in buckets]
+        asks = [_num(m, "yes_ask_dollars") for m in legs]
         leg_fees = total_taker_fee([(1, a) for a in asks])
         cost = sum((Decimal(str(a)) for a in asks), Decimal("0.00")) + leg_fees
         edge = Decimal("1.00") - cost
         if edge > 0:
             out.append(BracketSumViolation(
                 event_ticker=event_ticker,
-                tickers=[m["ticker"] for m in buckets],
+                tickers=[m["ticker"] for m in legs],
                 sum_yes_ask=float(sum(asks)),
                 fees_usd=float(leg_fees),
                 edge_usd=float(edge),
+                leg_asks={m["ticker"]: a for m, a in zip(legs, asks)},
             ))
     return out

@@ -91,13 +91,22 @@ def main() -> None:
         if any(t in already_filled for t in v.tickers):
             print(f"  skipping {v.event_ticker}: already have a paper fill on one of these legs")
             continue
-        # re-fetch each leg's ask isn't necessary here -- edge_usd was computed
-        # from sum_yes_ask, but we need the individual leg asks to place each
-        # order. Recompute from the tickers by looking them back up.
-        by_ticker = {m["ticker"]: m for m in markets}
+        # v.tickers is the event's COMPLETE outcome set (both tails included --
+        # see scanner.complete_bracket_set), so every leg is bought or none is.
+        # A vetoed leg would leave a partial set, which is a directional bet,
+        # not an arb -- so check the whole set fits the risk gate first.
+        set_cost = sum(v.leg_asks.values()) + v.fees_usd
+        if set_cost > broker.cash_usd:
+            print(f"  skipping {v.event_ticker}: set costs ${set_cost:.2f}, only ${broker.cash_usd:.2f} paper cash")
+            continue
+        if broker._total_exposure_usd() + sum(v.leg_asks.values()) > broker.limits.max_total_exposure_usd:
+            print(f"  skipping {v.event_ticker}: whole set would breach max_total_exposure_usd")
+            continue
+        if broker.limits.kill_switch_path.exists():
+            print(f"  skipping {v.event_ticker}: kill switch active")
+            continue
         for t in v.tickers:
-            m = by_ticker[t]
-            broker.buy(t, "yes", float(m["yes_ask_dollars"]), qty=1, reason="bracket-sum violation")
+            broker.buy(t, "yes", v.leg_asks[t], qty=1, reason="bracket-sum violation")
 
     print(f"paper cash remaining: ${broker.cash_usd:.2f}")
     print(f"open paper positions: {len(broker.positions)}")
