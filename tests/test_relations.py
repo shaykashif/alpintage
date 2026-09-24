@@ -228,3 +228,24 @@ def test_missing_quotes_names_the_empty_side():
     b = C("B", 0.99, 1.0)
     assert relations.relation_arb("a_implies_b", a, b) is None
     assert relations.missing_quotes("a_implies_b", a, b) == ["no YES bid on A (so no NO to buy)", "no seller of YES on B"]
+
+
+# --- prompt versioning ------------------------------------------------------
+
+def test_ranked_list_guidance_is_in_the_not_both_and_at_least_one_questions():
+    for rel in ("mutually_exclusive", "exhaustive"):
+        assert "DIFFERENT positions" in relations.RELATION_QUESTIONS[rel]
+    assert "DIFFERENT positions" not in relations.RELATION_QUESTIONS["a_implies_b"]
+
+
+def test_only_old_verdicts_accepting_a_stricter_relation_are_reasked():
+    def v(version, **kw):
+        row = {"route": "typesafe", "probs": _probs(**kw)}
+        if version:
+            row["prompt_version"] = version
+        return row
+    assert rrs.needs_reask(v(None, mutually_exclusive=0.95))  # the Moonshot/Zhipu case
+    assert not rrs.needs_reask(v(relations.PROMPT_VERSION, mutually_exclusive=0.95))
+    assert not rrs.needs_reask(v(None, a_implies_b=0.95))  # implication question unchanged
+    assert not rrs.needs_reask(v(None, mutually_exclusive=0.5))  # rejected either way
+    assert not rrs.needs_reask(None)

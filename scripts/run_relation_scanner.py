@@ -90,6 +90,7 @@ def ask_jev(a: relations.Contract, b: relations.Contract) -> dict:
         "probs_ba": ba.probs,
         "route": "typesafe" if ab.route == ba.route == "typesafe" else "mock",
         "model": ab.model,
+        "prompt_version": relations.PROMPT_VERSION,
         "asked_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -108,16 +109,31 @@ def verdict_relations(verdict: dict | None, threshold: float,
     return relations.classify(verdict["probs"], threshold, gate_threshold, implication_gate_threshold)
 
 
+def needs_reask(verdict: dict | None) -> bool:
+    """A cached verdict judged under an older prompt whose accepted
+    relations include one the current prompt is stricter about. Pairs it
+    currently rejects stay cached -- a stricter question can't accept them."""
+    if not verdict or verdict.get("route") != "typesafe":
+        return False
+    if verdict.get("prompt_version", 1) >= relations.PROMPT_VERSION:
+        return False
+    rels, _ = relations.classify(verdict["probs"])
+    return bool(relations.STRICTER_IN_CURRENT & set(rels))
+
+
 def classify_pairs(pairs, cache: dict, max_new: int, workers: int) -> dict[str, dict]:
     """Cached verdicts for every pair, asking Jev (in parallel) for up to
     `max_new` pairs not seen before. Kalshi x Polymarket pairs go first --
     the same event listed on both venues is the cleanest arbitrage, but
     Kalshi's ~20x larger catalog otherwise buries them (first cross-venue
     pair ranked #407 by title similarity, seen live) -- then best-scoring."""
+    stale = [(a, b) for a, b, _ in pairs if needs_reask(cache.get(relations.pair_key(a, b)))]
     uncached = [(a, b) for a, b, _ in pairs if relations.pair_key(a, b) not in cache]
-    todo = sorted(uncached, key=lambda p: p[0].venue == p[1].venue)[:max_new]  # stable: keeps score order
+    # Re-asks first: those pairs are confirmed now under an outdated question.
+    todo = (stale + sorted(uncached, key=lambda p: p[0].venue == p[1].venue))[:max_new]  # stable: keeps score order
     if todo:
-        print(f"asking Jev about {len(todo)} new pair(s) ({workers} in parallel)...")
+        print(f"asking Jev about {len(todo)} pair(s) ({min(len(stale), max_new)} re-asked under prompt "
+              f"v{relations.PROMPT_VERSION}; {workers} in parallel)...")
     new_rows = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(ask_jev, a, b): (a, b) for a, b in todo}
