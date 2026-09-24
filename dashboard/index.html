@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Pternas</title>
-<meta name="description" content="Paper-traded relationship arbitrage, cross-venue sports stat-arb and ladder/bracket arbs on Kalshi and Polymarket. No real orders.">
+<meta name="description" content="Pternas is an arbitrage engine that uses frontier classification models to cross compare thousands of cultural and economic events in real time, finding discrepancies and violations with unmatched speed.">
 <script>
   // Before first paint: saved theme choice (else OS preference applies via
   // CSS), and hide reveal targets only if motion is allowed -- with a
@@ -20,7 +20,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/app.css?v=2">
+<link rel="stylesheet" href="/assets/app.css?v=6">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -28,19 +28,16 @@
 
   <header class="topbar">
     <a class="brand" href="#top" aria-label="Pternas, back to top">
-      <span class="brand-mark" aria-hidden="true"><i></i><i class="off"></i><i></i><i class="off"></i><i></i><i class="off"></i><i></i><i class="off"></i><i></i></span>
+      <!-- 3x3 mark with the top-left cell dropped: reads as a heel (pterna, Greek). -->
+      <span class="brand-mark" aria-hidden="true"><i class="off"></i><i class="off"></i><i></i><i class="off"></i><i></i><i class="off"></i><i></i><i class="off"></i><i></i></span>
       Pternas
     </a>
     <nav class="nav" aria-label="Sections">
-      <a href="#book">Book</a><a href="#relations">Relations</a><a href="#positions">Positions</a><a href="#sports">Sports</a><a href="#system">System</a>
+      <a href="#book">Book</a><a href="#relations">Relations</a><a href="#comparisons">Comparisons</a><a href="#positions">Positions</a>
     </nav>
     <div class="topbar-right">
       <span class="status" id="loop-status"><span class="dot" aria-hidden="true"></span><span id="loop-status-text">--</span></span>
       <span class="clock" id="clock" aria-hidden="true">--:--:-- UTC</span>
-      <div class="toggle" role="group" aria-label="Color theme">
-        <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
-        <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
-      </div>
     </div>
   </header>
 
@@ -48,8 +45,8 @@
     <section class="hero" data-reveal aria-labelledby="hero-title">
       <canvas class="hero-dots" id="dots" aria-hidden="true"></canvas>
       <div class="hero-copy">
-        <div class="eyebrow">Paper book &middot; mark-to-market &middot; USD</div>
-        <h1 id="hero-title">Three strategies,<br><em>zero real orders.</em></h1>
+        <h1 id="hero-title">There's no points for<br><em>second best.</em></h1>
+        <p class="hero-desc">Pternas is an arbitrage engine that uses frontier classification models to cross compare thousands of cultural and economic events in real time, finding discrepancies and violations with unmatched speed.</p>
         <div class="lcd-wrap">
           <span class="lcd-sign num" id="pnl-sign">+</span>
           <span class="lcd" id="pnl-lcd" role="img" aria-label="total PnL"></span>
@@ -63,39 +60,13 @@
         <div class="hero-foot" id="hero-foot"></div>
       </div>
       <div class="hero-visual">
-        <div class="chips" role="group" aria-label="Fiber visual mode">
-          <button type="button" class="chip" data-mode="helix" aria-pressed="true">Helix</button>
-          <button type="button" class="chip" data-mode="strata" aria-pressed="false">Strata</button>
-          <button type="button" class="chip" data-mode="ribbon" aria-pressed="false">Ribbon</button>
-          <button type="button" class="chip freeze" id="freeze" aria-pressed="false">Freeze</button>
-        </div>
         <canvas id="helix" aria-hidden="true"></canvas>
-        <div class="visual-caption" id="visual-caption">relation graph</div>
       </div>
     </section>
-
-    <div class="ledger strip" data-reveal>
-      <div class="cell" data-strategy="relation_arb">
-        <div class="cell-head"><span class="cell-title">Relation arb</span><span class="cell-tag">event markets &middot; Jev-judged</span></div>
-        <div class="big" data-field="pnl">--</div><div class="sub" data-field="sub">--</div>
-        <svg class="spark" data-field="spark" viewBox="0 0 300 34" preserveAspectRatio="none" aria-hidden="true"></svg>
-      </div>
-      <div class="cell" data-strategy="stat_arb">
-        <div class="cell-head"><span class="cell-title">Stat arb</span><span class="cell-tag">sports &middot; cross-venue</span></div>
-        <div class="big" data-field="pnl">--</div><div class="sub" data-field="sub">--</div>
-        <svg class="spark" data-field="spark" viewBox="0 0 300 34" preserveAspectRatio="none" aria-hidden="true"></svg>
-      </div>
-      <div class="cell" data-strategy="ladder_bracket">
-        <div class="cell-head"><span class="cell-title">Ladder / bracket</span><span class="cell-tag">within-Kalshi arbs</span></div>
-        <div class="big" data-field="pnl">--</div><div class="sub" data-field="sub">--</div>
-        <svg class="spark" data-field="spark" viewBox="0 0 300 34" preserveAspectRatio="none" aria-hidden="true"></svg>
-      </div>
-    </div>
 
     <section class="section" id="book" aria-labelledby="book-h">
       <div class="section-head" data-reveal>
         <span class="section-index">01</span><h2 id="book-h">Equity curve</h2>
-        <p>One point per scoring pass. Open positions are valued at the bid a sale would get, net of the exit fee.</p>
       </div>
       <div class="ledger two" data-reveal>
         <div class="cell">
@@ -115,7 +86,6 @@
     <section class="section" id="relations" aria-labelledby="rel-h">
       <div class="section-head" data-reveal>
         <span class="section-index">02</span><h2 id="rel-h">Relationship arbitrage</h2>
-        <p>Jev reads both rulebooks and says how two markets are logically related; arithmetic checks whether prices break it.</p>
       </div>
       <div class="ledger" data-reveal>
         <div class="stats-row" id="rel-stats"></div>
@@ -123,40 +93,38 @@
       </div>
     </section>
 
+    <section class="section" id="comparisons" aria-labelledby="cmp-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">03</span><h2 id="cmp-h">Every comparison</h2>
+      </div>
+      <div class="ledger" data-reveal>
+        <div class="stats-row" id="cmp-stats"></div>
+        <div class="cell">
+          <div class="cell-head">
+            <div class="filters" role="group" aria-label="Filter comparisons">
+              <button type="button" data-filter="all" aria-pressed="true">All</button>
+              <button type="button" data-filter="cross" aria-pressed="false">Kalshi &times; Polymarket</button>
+              <button type="button" data-filter="related" aria-pressed="false">Relations</button>
+              <button type="button" data-filter="violation" aria-pressed="false">Violations</button>
+              <button type="button" data-filter="near miss" aria-pressed="false">Near misses</button>
+              <button type="button" data-filter="unrelated" aria-pressed="false">Unrelated</button>
+            </div>
+            <span class="cell-tag" id="cmp-tag"></span>
+          </div>
+          <p class="key">Each row compares two markets, <b>A</b> and <b>B</b>. <b>If A, then B</b>: whenever A resolves YES, B must too, so B should never be cheaper than A. <b>Not both</b>: they can't both resolve YES, so their prices shouldn't add up past $1. <b>Same outcome</b>: they always resolve the same way, so they should cost the same.</p>
+          <div class="table-wrap" id="cmp-table"></div>
+          <button type="button" class="more" id="cmp-more" hidden>Show more</button>
+        </div>
+      </div>
+    </section>
+
     <section class="section" id="positions" aria-labelledby="pos-h">
       <div class="section-head" data-reveal>
-        <span class="section-index">03</span><h2 id="pos-h">Positions &amp; trades</h2>
-        <p>Every paper fill, across all three strategies. Arb legs are bought all together or not at all.</p>
+        <span class="section-index">04</span><h2 id="pos-h">Positions &amp; trades</h2>
       </div>
       <div class="ledger" data-reveal>
         <div class="cell"><div class="cell-head"><span class="cell-title">Open positions</span></div><div class="table-wrap" id="positions-table"></div></div>
         <div class="cell"><div class="cell-head"><span class="cell-title">Recent entries &amp; exits</span></div><div class="table-wrap" id="paper-table"></div></div>
-      </div>
-    </section>
-
-    <section class="section" id="sports" aria-labelledby="sports-h">
-      <div class="section-head" data-reveal>
-        <span class="section-index">04</span><h2 id="sports-h">Sports: Kalshi vs. the books</h2>
-        <p>Kalshi moneylines against de-vigged sportsbook consensus and Polymarket, matched game-by-game by Jev.</p>
-      </div>
-      <div class="ledger halves" data-reveal>
-        <div class="cell">
-          <div class="cell-head"><span class="cell-title">Divergence distribution</span></div>
-          <div class="stats-row" id="cv-stats" style="margin-top:12px"></div>
-          <div class="chart-box mid"><canvas id="diffChart" role="img" aria-label="Histogram of cross-venue price divergence"></canvas></div>
-        </div>
-        <div class="cell"><div class="cell-head"><span class="cell-title">Biggest disagreements</span></div><div class="table-wrap" id="cv-table"></div></div>
-      </div>
-    </section>
-
-    <section class="section" id="system" aria-labelledby="sys-h">
-      <div class="section-head" data-reveal>
-        <span class="section-index">05</span><h2 id="sys-h">System</h2>
-        <p>The loop on the server: each cycle's commands and output, newest last.</p>
-      </div>
-      <div class="ledger halves" data-reveal>
-        <div class="cell"><div class="cell-head"><span class="cell-title">Loop activity</span><span class="cell-tag" id="loop-last">--</span></div><pre class="log" id="loop-log"></pre></div>
-        <div class="cell"><div class="cell-head"><span class="cell-title">Jev predictions (research log)</span><span class="cell-tag" id="brier-tag">--</span></div><div class="table-wrap" id="pred-table"></div></div>
       </div>
     </section>
   </main>
@@ -164,9 +132,13 @@
   <footer>
     <span>PTERNAS &middot; PAPER TRADING ONLY &middot; NO REAL ORDERS ARE EVER PLACED</span>
     <span id="footer-updated">--</span>
+    <div class="toggle" role="group" aria-label="Color theme">
+      <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
+      <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
+    </div>
   </footer>
 </div>
 
-<script type="module" src="/assets/app.js?v=2"></script>
+<script type="module" src="/assets/app.js?v=6"></script>
 </body>
 </html>

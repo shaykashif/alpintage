@@ -211,3 +211,12 @@ def test_polymarket_settlement_maps_to_kalshi_shape():
     assert polymarket_as_kalshi_shape({"closed": True, "outcomePrices": '["0", "1"]'})["result"] == "no"
     live = polymarket_as_kalshi_shape({"closed": False, "outcomePrices": '["0.4", "0.6"]', "bestBid": 0.39, "bestAsk": 0.41})
     assert live["status"] == "active" and live["yes_bid_dollars"] == 0.39
+
+
+def test_missing_quotes_names_the_empty_side():
+    # Live case: a nearly-decided BTC strike with no YES bid (so no NO to
+    # buy) on A and no YES seller on B.
+    a = C("A", 0.0, 0.02)
+    b = C("B", 0.99, 1.0)
+    assert relations.relation_arb("a_implies_b", a, b) is None
+    assert relations.missing_quotes("a_implies_b", a, b) == ["no YES bid on A (so no NO to buy)", "no seller of YES on B"]

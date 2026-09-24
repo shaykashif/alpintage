@@ -89,7 +89,13 @@ def ask_noul_multi(state: str, questions: dict[str, str], timeout: float = 30.0)
         "questions": {name: {"type": "noul", "instructions": text} for name, text in questions.items()},
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    r = httpx.post(TYPESAFE_URL, json=body, headers=headers, timeout=timeout)
+    # Transient 503s/429s were seen live under 8-way parallel load: retry a
+    # couple of times with backoff before letting the caller defer the item.
+    for attempt in range(3):
+        r = httpx.post(TYPESAFE_URL, json=body, headers=headers, timeout=timeout)
+        if r.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
+            break
+        time.sleep(0.8 * 2 ** attempt)
     r.raise_for_status()
     data = r.json()
     return NoulMultiResult(

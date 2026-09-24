@@ -119,7 +119,7 @@ def cross_venue_summary(top_n: int = 15) -> dict:
     }
 
 
-def paper_trading_summary(recent_n: int = 30) -> dict:
+def paper_trading_summary(recent_n: int = 100) -> dict:
     """Fills/exits/vetoes come straight from the log (fast). PnL -- realized
     and mark-to-market -- comes from files score_paper_fills.py writes each
     loop cycle (the cached summary and the appended equity curve), since
@@ -148,12 +148,21 @@ def paper_trading_summary(recent_n: int = 30) -> dict:
             "stat_arb_pnl": (r.get("by_strategy") or {}).get(ledger.STAT_ARB_STRATEGY),
             "relation_arb_pnl": (r.get("by_strategy") or {}).get("relation_arb"),
             "by_strategy": r.get("by_strategy") or {},
+            "by_strategy_detail": r.get("by_strategy_detail") or {},
         }
         for r in _load_jsonl(DATA_DIR / "paper_equity.jsonl")
     ]
 
     trades = sorted(fills + sells, key=lambda r: r.get("ts") or "", reverse=True)[:recent_n]
+    fills_by_strategy: dict[str, int] = {}
+    exits_by_strategy: dict[str, int] = {}
+    for r in fills:
+        fills_by_strategy[ledger.strategy_of(r)] = fills_by_strategy.get(ledger.strategy_of(r), 0) + 1
+    for r in sells:
+        exits_by_strategy[ledger.strategy_of(r)] = exits_by_strategy.get(ledger.strategy_of(r), 0) + 1
     return {
+        "fills_by_strategy": fills_by_strategy,
+        "exits_by_strategy": exits_by_strategy,
         "total_fills": len(fills),
         "total_exits": len(sells),
         "total_vetoes": len(vetoes),
@@ -184,6 +193,15 @@ def relation_summary(recent_n: int = 25) -> dict:
     verdict cache) and priced opportunities (tradeable or not)."""
     verdicts = _load_jsonl(DATA_DIR / "relations_cache.jsonl")
     arbs = _load_jsonl(DATA_DIR / "relation_arbs.jsonl")
+    # Latest scan's judged pairs (violations or not), written by
+    # run_relation_scanner.py -- already bounded in size there.
+    comparisons = None
+    comparisons_path = DATA_DIR / "relation_comparisons.json"
+    if comparisons_path.exists():
+        try:
+            comparisons = json.loads(comparisons_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            comparisons = None
     by_kind: dict[str, int] = {}
     for a in arbs:
         by_kind[a.get("kind", "?")] = by_kind.get(a.get("kind", "?"), 0) + 1
@@ -193,6 +211,7 @@ def relation_summary(recent_n: int = 25) -> dict:
         "tradeable_logged": sum(1 for a in arbs if a.get("tradeable")),
         "traded": sum(1 for a in arbs if a.get("traded")),
         "by_kind": by_kind,
+        "comparisons": comparisons,
         "recent": [
             {
                 "kind": a.get("kind"),

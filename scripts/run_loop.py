@@ -1,9 +1,15 @@
-"""Run three paper-trading models on a repeating interval, for multi-day
-unattended operation. Nothing here sends a real order.
+"""Run the models on a repeating interval, for multi-day unattended
+operation. Nothing here sends a real order.
 
-1. run_scanner.py --paper: true arbitrage within Kalshi (ladder/bracket
+PAPER TRADING IS SCOPED TO CULTURAL, ECONOMIC AND GEOPOLITICAL EVENTS (the project
+owner's choice): only the relationship scanner (3.) paper-trades by
+default. The ladder/bracket (1.) and sports (2.) models still scan and log
+every cycle -- their data stays useful research -- but only paper-trade
+when opted back in with --ladder-paper / --sports-paper.
+
+1. run_scanner.py: true arbitrage within Kalshi (ladder/bracket
    violations -- a mathematical guarantee). Runs every cycle.
-2. run_cross_venue_scanner.py --paper: Kalshi vs. sportsbook (The Odds API)
+2. run_cross_venue_scanner.py: Kalshi vs. sportsbook (The Odds API)
    / Polymarket mispricing, with Jev used ONLY to confirm two listings
    describe the same real-world game (never to set a price or a trade
    decision). Run as a statistical-arbitrage book (stat_arb.py): Kelly-
@@ -14,7 +20,7 @@ unattended operation. Nothing here sends a real order.
    periodically (--cross-venue-every), not every cycle, since it costs
    real Odds API quota -- so exits are also only checked that often.
 3. run_relation_scanner.py --paper: relationship arbitrage on short-dated
-   cultural/economic/political event markets (Kalshi + Polymarket). Jev
+   cultural, economic and geopolitical event markets (Kalshi + Polymarket). Jev
    classifies how pairs of markets are logically related (A implies B,
    mutually exclusive, ...) from their full rules; arithmetic finds prices
    that violate the relation; every leg is paper-bought or none is. Runs
@@ -91,8 +97,10 @@ def main() -> None:
     ap.add_argument("--cross-venue-every", type=int, default=6, help="run the cross-venue model every N cycles (0 = never)")
     ap.add_argument("--cross-venue-leagues", default="nfl", help="comma-separated league keys, or 'all' (costs more Odds API quota)")
     ap.add_argument("--require-trust", action="store_true", help="pass through to run_cross_venue_scanner.py's stricter, evidence-gated mode")
+    ap.add_argument("--ladder-paper", action="store_true", help="also paper-trade ladder/bracket arbs (off: scan + log only)")
+    ap.add_argument("--sports-paper", action="store_true", help="also paper-trade the sports cross-venue model (off: scan + log only)")
     ap.add_argument("--relations-every", type=int, default=1, help="run the relationship-arb scanner every N cycles (0 = never)")
-    ap.add_argument("--relations-horizon-days", type=float, default=7.0, help="only event markets settling within this many days")
+    ap.add_argument("--relations-horizon-days", type=float, default=21.0, help="only event markets settling within this many days")
     args = ap.parse_args()
 
     python = sys.executable
@@ -102,14 +110,17 @@ def main() -> None:
         while True:
             cycle += 1
             print(f"\n=== cycle {cycle} ===")
-            _run([python, "scripts/run_scanner.py", "--max-pages", str(args.scan_pages), "--paper"])
+            scan_cmd = [python, "scripts/run_scanner.py", "--max-pages", str(args.scan_pages)]
+            _run(scan_cmd + (["--paper"] if args.ladder_paper else []))
             if args.relations_every and (cycle == 1 or cycle % args.relations_every == 0):
-                # Fetching ~12k event markets + Jev on new pairs: minutes, not seconds.
-                _run([python, "scripts/run_relation_scanner.py", "--horizon-days", str(args.relations_horizon_days), "--paper"], timeout=1200)
+                # Tens of thousands of event markets + up to 1,200 new Jev pairs: minutes.
+                _run([python, "scripts/run_relation_scanner.py", "--horizon-days", str(args.relations_horizon_days), "--paper"], timeout=2400)
             _run([python, "scripts/score_paper_fills.py"], timeout=300)
 
             if args.cross_venue_every and (cycle == 1 or cycle % args.cross_venue_every == 0):
-                cv_cmd = [python, "scripts/run_cross_venue_scanner.py", "--leagues", args.cross_venue_leagues, "--paper"]
+                cv_cmd = [python, "scripts/run_cross_venue_scanner.py", "--leagues", args.cross_venue_leagues]
+                if args.sports_paper:
+                    cv_cmd.append("--paper")
                 if args.require_trust:
                     cv_cmd.append("--require-trust")
                 _run(cv_cmd, timeout=600)  # a multi-league scan can take minutes, not seconds

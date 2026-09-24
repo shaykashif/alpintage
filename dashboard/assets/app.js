@@ -1,10 +1,12 @@
-// Pternas dashboard: renders /api/summary (read-only, no live API
-// calls server-side) and refreshes every 60s. Motion via anime.js v4;
-// every animation is skipped under prefers-reduced-motion.
+// Pternas dashboard: the cultural & economic relationship-arbitrage book.
+// Renders /api/summary (read-only; no live API calls server-side) and
+// refreshes every 60s. Motion via anime.js v4; every animation is skipped
+// under prefers-reduced-motion.
 import { animate, stagger } from "https://cdn.jsdelivr.net/npm/animejs@4.5.0/+esm";
-import { DotField, FiberHelix, Lcd } from "/assets/visuals.js?v=2";
+import { DotField, FiberHelix, Lcd } from "/assets/visuals.js?v=6";
 
 const REFRESH_MS = 60_000;
+const STRATEGY = "relation_arb";
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const $ = (id) => document.getElementById(id);
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -38,7 +40,7 @@ const shown = new Map(); // element id -> last value shown, so refreshes tween f
 /** Count a number up (or down) to `value` in `el`, formatted by `fmt`. */
 function countTo(el, value, fmt, { duration = 900 } = {}) {
   if (!el) return;
-  const key = el.id || el.dataset.key;
+  const key = el.id;
   const from = shown.get(key);
   shown.set(key, value);
   if (value === null || value === undefined || reduce) { el.textContent = fmt(value); return; }
@@ -51,9 +53,7 @@ function revealOnce() {
   if (window.__revealed) return;
   window.__revealed = true;
   if (reduce) return;
-  animate("[data-reveal]", {
-    opacity: [0, 1], translateY: [14, 0], duration: 800, ease: "outExpo", delay: stagger(70),
-  });
+  animate("[data-reveal]", { opacity: [0, 1], translateY: [14, 0], duration: 800, ease: "outExpo", delay: stagger(80) });
 }
 
 const seenRows = new WeakSet();
@@ -65,7 +65,7 @@ function staggerRows(container) {
 }
 
 // ---- theme ------------------------------------------------------------------------
-let dots, helix;
+let dots, helix, lastData = null;
 function currentTheme() {
   const set = document.documentElement.dataset.theme;
   if (set) return set;
@@ -90,204 +90,175 @@ window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () 
 dots = new DotField($("dots"));
 helix = new FiberHelix($("helix"));
 const lcd = new Lcd($("pnl-lcd"), { decimals: 2 });
-window.pternas = { dots, helix }; // handy for poking at the visuals from devtools
 lcd.render(0);
+window.pternas = { dots, helix }; // handy for poking at the visuals from devtools
 
-document.querySelectorAll(".chip[data-mode]").forEach((chip) =>
-  chip.addEventListener("click", () => {
-    if (!helix.setMode(chip.dataset.mode)) return;
-    document.querySelectorAll(".chip[data-mode]").forEach((c) => c.setAttribute("aria-pressed", String(c === chip)));
-    if (reduce) { helix.morph = 1; helix.draw(); return; }
-    animate(helix, { morph: [0, 1], duration: 1400, ease: "inOutQuart", onUpdate: () => helix.frozen && helix.draw() });
-  }),
-);
-$("freeze").addEventListener("click", (e) => {
-  helix.frozen = !helix.frozen;
-  e.currentTarget.setAttribute("aria-pressed", String(helix.frozen));
-  e.currentTarget.textContent = helix.frozen ? "Resume" : "Freeze";
-});
+// The helix wanders on its own: scrolling or pointer activity sends it off
+// to strata or ribbon, it dwells there a few seconds and comes back, and an
+// idle page still takes an excursion every so often.
+(() => {
+  const AWAY = ["strata", "ribbon"];
+  const DWELL_MS = 5200, COOLDOWN_MS = 4000, IDLE_MS = 13000, MORPH_MS = 1700;
+  let busy = false, lastChange = performance.now(), returnTimer = 0, activity = 0;
+
+  function go(mode) {
+    if (!helix.setMode(mode)) return false;
+    busy = true;
+    lastChange = performance.now();
+    animate(helix, { morph: [0, 1], duration: MORPH_MS, ease: "inOutQuart", onComplete: () => (busy = false) });
+    return true;
+  }
+  function excursion() {
+    if (reduce || busy || helix.to !== "helix" || performance.now() - lastChange < COOLDOWN_MS) return;
+    if (!go(AWAY[Math.floor(Math.random() * AWAY.length)])) return;
+    clearTimeout(returnTimer);
+    returnTimer = setTimeout(() => go("helix"), MORPH_MS + DWELL_MS);
+  }
+  function nudge(amount, threshold) {
+    activity += amount;
+    if (activity >= threshold) { activity = 0; excursion(); }
+  }
+  let lastY = window.scrollY, lastPt = null;
+  window.addEventListener("scroll", () => { nudge(Math.abs(window.scrollY - lastY), 180); lastY = window.scrollY; }, { passive: true });
+  window.addEventListener("pointermove", (e) => {
+    if (lastPt) nudge(Math.hypot(e.clientX - lastPt.x, e.clientY - lastPt.y), 1400);
+    lastPt = { x: e.clientX, y: e.clientY };
+  }, { passive: true });
+  setInterval(() => { if (performance.now() - lastChange > IDLE_MS) excursion(); }, 1500);
+})();
 
 setInterval(() => { $("clock").textContent = new Date().toISOString().slice(11, 19) + " UTC"; }, 1000);
 
+// ---- data shaping ---------------------------------------------------------------
+/** This strategy's slice of the book (totals and per-position rows). */
+function book(d) {
+  const s = d.paper_trading.pnl_summary || {};
+  const t = (s.by_strategy || {})[STRATEGY] || {};
+  return {
+    total: t.total_pnl ?? 0, realized: t.realized_pnl ?? 0, unrealized: t.unrealized_pnl ?? 0, capital: t.open_cost ?? 0,
+    open: t.open_count ?? 0, closed: t.closed_count ?? 0, wins: t.wins ?? 0,
+    positions: (s.positions || []).filter((p) => p.strategy === STRATEGY),
+    scoredAt: s.generated_at,
+  };
+}
+/** Equity points for this strategy. Rows written before per-strategy detail
+ *  existed only carry its total, so realized/capital fall back to null. */
+function curve(d) {
+  return (d.paper_trading.equity_curve || [])
+    .map((r) => {
+      const det = (r.by_strategy_detail || {})[STRATEGY];
+      const total = det ? det.total_pnl : (r.by_strategy || {})[STRATEGY];
+      return { ts: r.ts, total: total ?? null, realized: det ? det.realized_pnl : null, capital: det ? det.open_cost : null };
+    })
+    .filter((p) => p.total !== null);
+}
+
 // ---- renderers --------------------------------------------------------------------
-let lastData = null;
-
 function renderHero(d) {
-  const p = d.paper_trading, s = p.pnl_summary || {};
-  const total = s.total_pnl ?? 0;
+  const b = book(d), rel = d.relations || {};
   const sign = $("pnl-sign");
-  sign.textContent = total > 0 ? "+" : total < 0 ? MINUS : "±";
-  sign.className = "lcd-sign num " + signClass(total);
-  const key = "lcd";
-  const from = shown.get(key) ?? 0;
-  shown.set(key, total);
-  if (reduce) lcd.render(total);
-  else { const o = { v: from }; animate(o, { v: total, duration: 1400, ease: "outExpo", onUpdate: () => lcd.render(o.v) }); }
+  sign.textContent = b.total > 0 ? "+" : b.total < 0 ? MINUS : "±";
+  sign.className = "lcd-sign num " + signClass(b.total);
+  const from = shown.get("lcd") ?? 0;
+  shown.set("lcd", b.total);
+  if (reduce) lcd.render(b.total);
+  else { const o = { v: from }; animate(o, { v: b.total, duration: 1400, ease: "outExpo", onUpdate: () => lcd.render(o.v) }); }
 
-  countTo($("h-realized"), s.realized_pnl ?? null, usd);
-  countTo($("h-unrealized"), s.unrealized_pnl ?? null, usd);
-  countTo($("h-capital"), s.open_cost ?? null, (x) => usd(x, false));
-  $("h-realized").className = "v " + signClass(s.realized_pnl);
-  $("h-unrealized").className = "v " + signClass(s.unrealized_pnl);
+  countTo($("h-realized"), b.realized, usd);
+  countTo($("h-unrealized"), b.unrealized, usd);
+  countTo($("h-capital"), b.capital, (x) => usd(x, false));
+  $("h-realized").className = "v " + signClass(b.realized);
+  $("h-unrealized").className = "v " + signClass(b.unrealized);
 
-  const rel = d.relations || {};
   $("hero-foot").innerHTML =
-    `<span><b>${s.open_count ?? 0}</b> open positions</span>` +
-    `<span><b>${rel.pairs_judged ?? 0}</b> market pairs judged</span>` +
-    `<span><b>${p.total_fills}</b> paper fills</span>` +
-    `<span>scored ${esc(ago(s.generated_at))}</span>`;
-  $("visual-caption").textContent = `relation graph · ${rel.pairs_judged ?? 0} pairs · ${rel.traded ?? 0} traded`;
-}
-
-function sparkPath(values) {
-  const pts = values.filter((v) => v !== null && v !== undefined);
-  if (pts.length < 2) return "";
-  const lo = Math.min(0, ...pts), hi = Math.max(0, ...pts), span = hi - lo || 1;
-  const X = (i) => (i / (pts.length - 1)) * 300, Y = (v) => 31 - ((v - lo) / span) * 28;
-  const zero = Y(0);
-  return `<line x1="0" x2="300" y1="${zero}" y2="${zero}"></line><path d="${pts.map((v, i) => `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)}`).join(" ")}"></path>`;
-}
-
-function renderStrategies(d) {
-  const by = (d.paper_trading.pnl_summary || {}).by_strategy || {};
-  const curve = d.paper_trading.equity_curve || [];
-  document.querySelectorAll("[data-strategy]").forEach((cell) => {
-    const k = cell.dataset.strategy, t = by[k];
-    const pnlEl = cell.querySelector('[data-field="pnl"]');
-    pnlEl.dataset.key = "strat-" + k;
-    countTo(pnlEl, t ? t.total_pnl : null, (x) => (x === null ? "$0.00" : usd(x)));
-    pnlEl.className = "big " + signClass(t?.total_pnl);
-    cell.querySelector('[data-field="sub"]').textContent = t
-      ? `${t.open_count} open · ${t.closed_count} closed · ${t.wins} won`
-      : "no positions yet";
-    const svg = cell.querySelector('[data-field="spark"]');
-    svg.innerHTML = sparkPath(curve.map((r) => (r.by_strategy || {})[k] ?? null));
-    const path = svg.querySelector("path");
-    if (path && !reduce && !svg.dataset.drawn) {
-      svg.dataset.drawn = "1";
-      const len = path.getTotalLength();
-      path.style.strokeDasharray = `${len}`;
-      animate(path, { strokeDashoffset: [len, 0], duration: 1600, ease: "inOutQuad", delay: 400 });
-    }
-  });
+    `<span><b>${(rel.pairs_judged ?? 0).toLocaleString()}</b> market pairs judged</span>` +
+    `<span><b>${(rel.opportunities_logged ?? 0).toLocaleString()}</b> violations priced</span>` +
+    `<span><b>${rel.traded ?? 0}</b> paper-traded</span>` +
+    `<span><b>${b.open}</b> open positions</span>`;
 }
 
 function renderBook(d) {
-  const p = d.paper_trading, s = p.pnl_summary || {};
-  const closed = s.closed_count || 0;
+  const b = book(d), p = d.paper_trading;
   const rows = [
-    ["Entries / exits", `${p.total_fills} / ${p.total_exits}`],
-    ["Open positions", s.open_count ?? 0],
-    ["Closed", closed],
-    ["Win rate (closed)", closed ? pct((s.wins || 0) / closed, 0) : "--"],
-    ["Settled", s.settled_count ?? 0],
-    ["Risk-gate vetoes", p.total_vetoes],
-    ["Last scoring pass", ago(s.generated_at)],
+    ["Entries / exits", `${(p.fills_by_strategy || {})[STRATEGY] ?? 0} / ${(p.exits_by_strategy || {})[STRATEGY] ?? 0}`],
+    ["Open positions", b.open],
+    ["Closed", b.closed],
+    ["Win rate (closed)", b.closed ? pct(b.wins / b.closed, 0) : "--"],
+    ["Last scoring pass", ago(b.scoredAt)],
   ];
   $("book-table").innerHTML = rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td class="num">${esc(v)}</td></tr>`).join("");
 }
 
-// ---- charts (Chart.js, themed from CSS tokens) -------------------------------------
-let equityChart, capitalChart, diffChart;
+let equityChart, capitalChart;
 function chartTheme() {
   return {
     s1: cssVar("--series-1"), s2: cssVar("--series-2"), ink: cssVar("--ink"), ink2: cssVar("--ink-2"),
-    ink3: cssVar("--ink-3"), grid: cssVar("--grid-line"), rule: cssVar("--rule-strong"), bg: cssVar("--bg"),
-    mono: cssVar("--mono"),
+    ink3: cssVar("--ink-3"), grid: cssVar("--grid-line"), rule: cssVar("--rule-strong"), bg: cssVar("--bg"), font: cssVar("--sans"),
   };
 }
-function baseOptions(t, { money = true, yTitle } = {}) {
-  const tick = { color: t.ink3, font: { family: t.mono, size: 10.5 } };
+function baseOptions(t) {
+  const tick = { color: t.ink3, font: { family: t.font, size: 10.5 } };
   return {
     responsive: true, maintainAspectRatio: false,
     interaction: { mode: "index", intersect: false },
     plugins: {
       legend: { display: false },
       tooltip: {
-        backgroundColor: t.ink, titleColor: t.bg, bodyColor: t.bg, borderWidth: 0, cornerRadius: 0,
-        titleFont: { family: t.mono, size: 11 }, bodyFont: { family: t.mono, size: 11 }, padding: 10,
-        boxWidth: 8, boxHeight: 2, usePointStyle: false,
-        callbacks: money ? { label: (c) => ` ${c.dataset.label}  ${usd(c.parsed.y)}` } : {},
+        backgroundColor: t.ink, titleColor: t.bg, bodyColor: t.bg, borderWidth: 0, cornerRadius: 0, padding: 10,
+        titleFont: { family: t.font, size: 11 }, bodyFont: { family: t.font, size: 11 }, boxWidth: 8, boxHeight: 2,
+        callbacks: { label: (c) => ` ${c.dataset.label}  ${usd(c.parsed.y)}` },
       },
     },
     scales: {
       x: { ticks: { ...tick, maxTicksLimit: 8, maxRotation: 0 }, grid: { display: false }, border: { color: t.rule } },
-      y: {
-        ticks: { ...tick, callback: (v) => (money ? usd(v) : v) }, grid: { color: t.grid }, border: { display: false },
-        grace: "12%", title: yTitle ? { display: true, text: yTitle, color: t.ink3, font: { family: t.mono, size: 10.5 } } : undefined,
-      },
+      y: { ticks: { ...tick, callback: (v) => usd(v) }, grid: { color: t.grid }, border: { display: false }, grace: "12%" },
     },
   };
 }
 
 function renderCharts(d, { animateLines = true } = {}) {
-  const t = chartTheme();
-  const curve = d.paper_trading.equity_curve || [];
-  const labels = curve.map((r) => new Date(r.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
-  const hasCurve = curve.length > 0;
-  $("equity-empty").hidden = hasCurve;
-  $("equity-empty").textContent = d.paper_trading.total_fills
-    ? "the curve starts at the next scoring pass (every loop cycle)"
-    : "no paper trades yet — the curve starts with the first scoring pass";
-  document.querySelectorAll("#equityChart, #capitalChart").forEach((c) => (c.parentElement.hidden = !hasCurve));
-
-  const last = curve[curve.length - 1] || {};
+  const t = chartTheme(), pts = curve(d);
+  const labels = pts.map((p) => new Date(p.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+  const has = pts.length > 0;
+  $("equity-empty").hidden = has;
+  $("equity-empty").textContent = "no relation-arb trades yet — the curve starts with the first scoring pass after one";
+  document.querySelectorAll("#equityChart, #capitalChart").forEach((c) => (c.parentElement.hidden = !has));
+  const last = pts[pts.length - 1] || {};
   $("equity-legend").innerHTML =
-    `<span><i style="background:${t.s1}"></i>Total ${esc(usd(last.total_pnl ?? null))}</span>` +
-    `<span><i style="background:${t.s2}"></i>Realized ${esc(usd(last.realized_pnl ?? null))}</span>`;
+    `<span><i style="background:${t.s1}"></i>Total ${esc(usd(last.total ?? null))}</span>` +
+    `<span><i style="background:${t.s2}"></i>Realized ${esc(usd(last.realized ?? null))}</span>`;
 
   const anim = reduce || !animateLines ? false : { duration: 1100, easing: "easeOutQuart" };
-  const point = curve.length > 40 ? 0 : 3;
+  const point = pts.length > 40 ? 0 : 3;
+  const line = (label, key, color) => ({
+    label, data: pts.map((p) => p[key]), borderColor: color, backgroundColor: color, borderWidth: 2,
+    pointRadius: point, pointHoverRadius: 5, pointBorderColor: t.bg, pointBorderWidth: 2, tension: 0.12, spanGaps: true,
+  });
 
   equityChart?.destroy();
-  if (hasCurve) {
-    equityChart = new Chart($("equityChart"), {
-      type: "line",
-      data: {
-        labels,
-        datasets: [
-          { label: "Total", data: curve.map((r) => r.total_pnl), borderColor: t.s1, backgroundColor: t.s1, borderWidth: 2, pointRadius: point, pointHoverRadius: 5, pointBorderColor: t.bg, pointBorderWidth: 2, tension: 0.12 },
-          { label: "Realized", data: curve.map((r) => r.realized_pnl), borderColor: t.s2, backgroundColor: t.s2, borderWidth: 2, pointRadius: point, pointHoverRadius: 5, pointBorderColor: t.bg, pointBorderWidth: 2, tension: 0.12 },
-        ],
-      },
-      options: { ...baseOptions(t), animation: anim },
-    });
-  }
-
   capitalChart?.destroy();
-  if (hasCurve) {
-    const opts = baseOptions(t);
-    opts.scales.y.beginAtZero = true;
-    opts.scales.y.ticks.callback = (v) => usd(v, false);
-    opts.plugins.tooltip.callbacks = { label: (c) => ` Capital at risk  ${usd(c.parsed.y, false)}` };
-    capitalChart = new Chart($("capitalChart"), {
-      type: "line",
-      data: { labels, datasets: [{ label: "Capital at risk", data: curve.map((r) => r.open_cost), borderColor: t.ink2, borderWidth: 1.5, stepped: true, pointRadius: 0, pointHoverRadius: 4 }] },
-      options: { ...opts, animation: anim },
-    });
-  }
-
-  const c = d.cross_venue;
-  diffChart?.destroy();
-  if (c.total_logged) {
-    const bins = c.histogram_bins;
-    const hl = bins.slice(0, -1).map((b, i) => `${(b * 100).toFixed(0)}–${(bins[i + 1] * 100).toFixed(0)}%`);
-    const opts = baseOptions(t, { money: false });
-    opts.interaction = { mode: "nearest", intersect: true };
-    opts.plugins.tooltip.callbacks = { label: (x) => ` ${x.parsed.y} comparisons` };
-    diffChart = new Chart($("diffChart"), {
-      type: "bar",
-      data: { labels: hl, datasets: [{ label: "comparisons", data: c.histogram_counts, backgroundColor: t.s1, borderRadius: { topLeft: 3, topRight: 3 }, borderSkipped: "bottom", barPercentage: 0.86, categoryPercentage: 0.9 }] },
-      options: { ...opts, animation: anim },
-    });
-  }
+  if (!has) return;
+  equityChart = new Chart($("equityChart"), {
+    type: "line",
+    data: { labels, datasets: [line("Total", "total", t.s1), line("Realized", "realized", t.s2)] },
+    options: { ...baseOptions(t), animation: anim },
+  });
+  const opts = baseOptions(t);
+  opts.scales.y.beginAtZero = true;
+  opts.scales.y.ticks.callback = (v) => usd(v, false);
+  opts.plugins.tooltip.callbacks = { label: (c) => ` Capital at risk  ${usd(c.parsed.y, false)}` };
+  capitalChart = new Chart($("capitalChart"), {
+    type: "line",
+    data: { labels, datasets: [{ label: "Capital at risk", data: pts.map((p) => p.capital), borderColor: t.ink2, borderWidth: 1.5, stepped: true, pointRadius: 0, pointHoverRadius: 4, spanGaps: true }] },
+    options: { ...opts, animation: anim },
+  });
 }
 
 function renderRelations(d) {
   const r = d.relations || { recent: [] };
   const stats = [
-    ["Pairs judged by Jev", r.pairs_judged],
-    ["Opportunities logged", r.opportunities_logged],
+    ["Pairs judged", r.pairs_judged],
+    ["Violations priced", r.opportunities_logged],
     ["Tradeable", r.tradeable_logged],
     ["Paper-traded", r.traded],
   ];
@@ -295,9 +266,9 @@ function renderRelations(d) {
   stats.forEach(([, v], i) => countTo($(`rel-stat-${i}`), v ?? 0, (x) => Math.round(x ?? 0).toLocaleString()));
 
   const el = $("rel-table");
-  if (!r.recent?.length) { el.innerHTML = emptyNote("no price has broken a Jev-confirmed relation yet — rare by design"); return; }
+  if (!r.recent?.length) { el.innerHTML = emptyNote("no price has broken a confirmed relation yet — rare by design"); return; }
   el.innerHTML = table(
-    [["Relation"], ["Legs"], ["Edge / set", "num"], ["Qty", "num"], ["Status"], ["When"]],
+    [["Relation"], ["Legs"], ["Edge / set", "num"], ["Qty", "num"], ["Status"], ["When", "num"]],
     r.recent.map((a) => `<tr>
       <td><span class="tag">${esc((a.kind || "").replaceAll("_", " "))}</span></td>
       <td class="tk">${a.legs.map(esc).join("<br>")}</td>
@@ -309,34 +280,110 @@ function renderRelations(d) {
   staggerRows(el);
 }
 
-const STRATEGY_LABEL = { relation_arb: "relation", stat_arb: "stat-arb", ladder_bracket: "ladder" };
+// ---- comparisons: every judged pair, violation or not --------------------------------
+// Plain words, not arrows: "B ⇒ A" read as jargon on the page.
+const REL_LABEL = { a_implies_b: "If A, then B", b_implies_a: "If B, then A", mutually_exclusive: "Not both", exhaustive: "At least one" };
+const STATUS_TAG = {
+  violation: '<span class="tag accent">violation</span>',
+  consistent: '<span class="tag good">consistent</span>',
+  unpriced: '<span class="tag">unpriced</span>',
+  "near miss": '<span class="tag">near miss</span>',
+  unrelated: '<span class="tag muted">unrelated</span>',
+};
+const PAGE = 50;
+const cmpState = { filter: "all", limit: PAGE };
+
+function relationLabel(r) {
+  if (r.relations.length === 2 && r.relations.includes("a_implies_b") && r.relations.includes("b_implies_a")) return "Same outcome";
+  if (r.relations.length) return r.relations.map((x) => REL_LABEL[x] || x).join(" + ");
+  return "none";
+}
+function marketCell(m) {
+  return `<td class="mkt"><div class="t">${esc(m.title)}</div><div class="m">${esc(m.venue)} · ${esc(m.topic || "")} · ${esc(m.ticker)}</div></td>`;
+}
+
+function renderComparisons(d) {
+  const c = (d.relations || {}).comparisons;
+  const el = $("cmp-table");
+  if (!c) {
+    $("cmp-stats").innerHTML = "";
+    el.innerHTML = emptyNote("the first scan with this version writes the comparisons list");
+    $("cmp-more").hidden = true;
+    return;
+  }
+  const n = c.counts || {};
+  const related = (n.violation || 0) + (n.consistent || 0) + (n.unpriced || 0);
+  const markets = Object.values(c.universe || {}).flatMap((v) => Object.values(v)).reduce((a, b) => a + b, 0);
+  const topicCount = (t) => Object.values(c.universe || {}).reduce((a, v) => a + (v[t] || 0), 0);
+  const stats = [
+    ["Pairs compared (live)", c.live_pairs],
+    ["Judged all-time", c.total_judged],
+    ["Relations confirmed", related],
+    ["Kalshi × Polymarket", n.cross_venue || 0],
+    ["Near misses", n["near miss"] || 0],
+    ["Markets in scope", markets],
+  ];
+  $("cmp-stats").innerHTML = stats.map(([k], i) => `<div class="kv"><div class="k">${esc(k)}</div><div class="v num" id="cmp-stat-${i}">--</div></div>`).join("");
+  stats.forEach(([, v], i) => countTo($(`cmp-stat-${i}`), v ?? 0, (x) => Math.round(x ?? 0).toLocaleString()));
+  $("cmp-tag").textContent = `${topicCount("cultural").toLocaleString()} cultural · ${topicCount("economic").toLocaleString()} economic · ${topicCount("geopolitical").toLocaleString()} geopolitical markets · scanned ${ago(c.generated_at)}`;
+
+  const f = cmpState.filter;
+  const match = { all: () => true, related: (r) => r.relations.length > 0, cross: (r) => r.a.venue !== r.b.venue };
+  const rows = (c.rows || []).filter(match[f] || ((r) => r.status === f));
+  const shownRows = rows.slice(0, cmpState.limit);
+  el.innerHTML = shownRows.length
+    ? table(
+        [["Status"], ["Market A"], ["Relation"], ["Market B"], ["Same thing", "num"], ["Price check", "num"], ["Judged", "num"]],
+        shownRows.map((r) => `<tr>
+          <td>${STATUS_TAG[r.status] || esc(r.status)}</td>
+          ${marketCell(r.a)}
+          <td class="rel">${esc(relationLabel(r))}<span class="p">${r.relations.length ? "" : "closest: " + esc(REL_LABEL[r.best.relation] || r.best.relation) + " "}${esc(pct(r.best.prob, 0))}</span></td>
+          ${marketCell(r.b)}
+          <td class="num">${esc(pct(r.gate, 0))}</td>
+          <td class="num ${r.status === "violation" ? "pos" : ""}" title="best set's guaranteed profit at current prices; negative = how far from a violation">${r.edge === null || r.edge === undefined ? "—" : esc(usd(r.edge)) + "/set"}${r.status === "unpriced" && r.note ? `<span class="why">${esc(r.note)}</span>` : ""}</td>
+          <td class="num">${esc(ago(r.asked_at))}</td></tr>`),
+      )
+    : emptyNote(f === "all" ? "no pairs judged in the latest scan yet" : "nothing in this filter right now");
+  const more = $("cmp-more");
+  more.hidden = rows.length <= cmpState.limit;
+  more.textContent = `Show more (${(rows.length - cmpState.limit).toLocaleString()} left)`;
+  staggerRows(el);
+}
+document.querySelectorAll("[data-filter]").forEach((b) =>
+  b.addEventListener("click", () => {
+    cmpState.filter = b.dataset.filter;
+    cmpState.limit = PAGE;
+    document.querySelectorAll("[data-filter]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    if (lastData) renderComparisons(lastData);
+  }),
+);
+$("cmp-more").addEventListener("click", () => { cmpState.limit += PAGE; if (lastData) renderComparisons(lastData); });
+
 function renderPositions(d) {
-  const p = d.paper_trading, s = p.pnl_summary || {};
-  const open = (s.positions || []).filter((x) => x.status === "open");
+  const b = book(d);
+  const open = b.positions.filter((x) => x.status === "open");
   const pos = $("positions-table");
   pos.innerHTML = open.length
     ? table(
-        [["Ticker"], ["Strategy"], ["Side"], ["Qty", "num"], ["Avg cost", "num"], ["Mark", "num"], ["Unrealized", "num"], ["Opened", "num"]],
-        open.map((x) => `<tr>
-          <td class="tk">${esc(x.ticker)}</td><td><span class="tag">${esc(STRATEGY_LABEL[x.strategy] || x.strategy)}</span></td>
-          <td class="tk">${esc((x.side || "").toUpperCase())}</td><td class="num">${esc(x.qty_open)}</td>
-          <td class="num">${esc(pct(x.avg_cost))}</td><td class="num">${esc(pct(x.mark))}</td>
+        [["Ticker"], ["Side"], ["Qty", "num"], ["Avg cost", "num"], ["Mark", "num"], ["Unrealized", "num"], ["Opened", "num"]],
+        open.map((x) => `<tr><td class="tk">${esc(x.ticker)}</td><td class="tk">${esc((x.side || "").toUpperCase())}</td>
+          <td class="num">${esc(x.qty_open)}</td><td class="num">${esc(pct(x.avg_cost))}</td><td class="num">${esc(pct(x.mark))}</td>
           <td class="num ${signClass(x.unrealized_pnl)}">${esc(usd(x.unrealized_pnl))}</td><td class="num">${esc(ago(x.opened_at))}</td></tr>`),
       )
     : emptyNote("no open positions");
   staggerRows(pos);
 
+  const fills = (d.paper_trading.recent_fills || []).filter((f) => f.strategy === STRATEGY).slice(0, 30);
   const tr = $("paper-table");
-  tr.innerHTML = p.recent_fills?.length
+  tr.innerHTML = fills.length
     ? table(
-        [["Action"], ["Ticker"], ["Strategy"], ["Side"], ["Qty", "num"], ["Price", "num"], ["Cost / PnL", "num"], ["Reason"], ["When", "num"]],
-        p.recent_fills.map((f) => {
+        [["Action"], ["Ticker"], ["Side"], ["Qty", "num"], ["Price", "num"], ["Cost / PnL", "num"], ["Reason"], ["When", "num"]],
+        fills.map((f) => {
           const sell = f.action === "sell";
           const money = sell ? `<span class="${signClass(f.pnl_usd)}">${esc(usd(f.pnl_usd))}</span>` : esc(usd(f.cost_usd, false));
           return `<tr><td><span class="tag ${sell ? "solid" : ""}">${sell ? "exit" : "enter"}</span></td>
-            <td class="tk">${esc(f.ticker)}</td><td><span class="tag">${esc(STRATEGY_LABEL[f.strategy] || f.strategy)}</span></td>
-            <td class="tk">${esc((f.side || "").toUpperCase())}</td><td class="num">${esc(f.qty ?? "")}</td>
-            <td class="num">${esc(pct(f.price))}</td><td class="num">${money}</td>
+            <td class="tk">${esc(f.ticker)}</td><td class="tk">${esc((f.side || "").toUpperCase())}</td>
+            <td class="num">${esc(f.qty ?? "")}</td><td class="num">${esc(pct(f.price))}</td><td class="num">${money}</td>
             <td class="wrap">${esc(f.reason || "")}</td><td class="num">${esc(ago(f.ts))}</td></tr>`;
         }),
       )
@@ -344,48 +391,11 @@ function renderPositions(d) {
   staggerRows(tr);
 }
 
-function renderSports(d) {
-  const c = d.cross_venue;
-  const stats = [["Comparisons", c.total_logged, (x) => Math.round(x).toLocaleString()], ["Avg divergence", c.avg_diff, (x) => pct(x)], ["Max divergence", c.max_diff, (x) => pct(x)], ["Leagues", Object.keys(c.by_league).length, (x) => Math.round(x)]];
-  $("cv-stats").innerHTML = stats.map(([k], i) => `<div class="kv"><div class="k">${esc(k)}</div><div class="v num" id="cv-stat-${i}">--</div></div>`).join("");
-  stats.forEach(([, v, f], i) => countTo($(`cv-stat-${i}`), v ?? null, (x) => (x === null ? "--" : f(x))));
-  const el = $("cv-table");
-  el.innerHTML = c.top_divergences.length
-    ? table(
-        [["League"], ["Game"], ["Kalshi"], ["Diff", "num"], ["Logged", "num"]],
-        c.top_divergences.map((r) => `<tr><td><span class="tag">${esc((r.league || "").toUpperCase())}</span></td>
-          <td class="tk">${esc(r.kalshi_event_ticker)}</td>
-          <td class="tk">${Object.entries(r.kalshi_probs || {}).map(([k, v]) => `${esc(k)} ${esc(pct(v, 0))}`).join("<br>")}</td>
-          <td class="num">${esc(pct(r.diff))}</td><td class="num">${esc(ago(r.logged_at))}</td></tr>`),
-      )
-    : emptyNote("nothing logged yet");
-  staggerRows(el);
-}
-
-function renderSystem(d) {
+function renderStatus(d) {
   const h = d.loop_health;
-  const status = $("loop-status");
   const live = h.last_line_at && !h.stale;
-  status.classList.toggle("stale", !live);
+  $("loop-status").classList.toggle("stale", !live);
   $("loop-status-text").textContent = !h.last_line_at ? "no loop" : live ? "live" : "stale";
-  $("loop-last").textContent = h.last_line_at ? `last activity ${ago(h.last_line_at)}` : "no activity yet";
-  $("loop-log").innerHTML = (h.recent_lines || [])
-    .map((l) => (l.startsWith("[") ? `<span class="ts">${esc(l)}</span>` : esc(l)))
-    .join("\n") || esc("run_loop.py hasn't logged anything yet");
-  const log = $("loop-log");
-  log.scrollTop = log.scrollHeight;
-
-  const p = d.predictions;
-  $("brier-tag").textContent = p.jev_brier === null ? `${p.total_scored} scored` : `Brier Jev ${p.jev_brier} · market ${p.market_brier}`;
-  const el = $("pred-table");
-  el.innerHTML = p.recent.length
-    ? table(
-        [["Ticker"], ["Market", "num"], ["Jev", "num"], ["Outcome"]],
-        p.recent.map((r) => `<tr><td class="tk">${esc(r.ticker)}</td><td class="num">${esc(pct(r.market_prob))}</td>
-          <td class="num">${esc(pct(r.jev_prob))}</td>
-          <td>${r.outcome === null ? '<span class="tag">pending</span>' : r.outcome ? '<span class="tag good">yes</span>' : '<span class="tag bad">no</span>'}</td></tr>`),
-      )
-    : emptyNote("nothing logged yet");
 }
 
 // ---- refresh loop -------------------------------------------------------------------
@@ -397,12 +407,11 @@ async function refresh() {
     const first = !lastData;
     lastData = d;
     renderHero(d);
-    renderStrategies(d);
     renderBook(d);
     renderRelations(d);
+    renderComparisons(d);
     renderPositions(d);
-    renderSports(d);
-    renderSystem(d);
+    renderStatus(d);
     renderCharts(d, { animateLines: first });
     $("footer-updated").textContent = `DATA ${new Date(d.generated_at).toISOString().slice(0, 19).replace("T", " ")} UTC · REFRESH 60S`;
   } catch (err) {

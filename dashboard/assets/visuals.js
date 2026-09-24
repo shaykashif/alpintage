@@ -1,10 +1,11 @@
 // Decorative + display primitives for the dashboard. Plain ES module, no
 // framework: the dashboard is a single Flask-served page with no build step.
 //
-// - DotField: pointillist halftone dots with pointer-repel and scroll-kick
-//   spring physics. Theme-aware: reads --dot from CSS.
+// - DotField: pointillist halftone dots on a slowly drifting field.
+//   Theme-aware: reads --dot from CSS.
 // - FiberHelix: an original canvas take on the 21st.dev "Helix Chrono
-//   Matrix" look (thin 3D fibers, traveling nodes, morphing topologies).
+//   Matrix" look (thin 3D fibers, traveling nodes, morphing topologies;
+//   the caller decides when to morph -- see app.js).
 // - Lcd: the seven-segment digit from 21st.dev "Segmented LCD Number Ticker"
 //   (@shadcnspace), extended with a decimal point; sign is rendered by the
 //   caller so it can carry +/- text, not color alone.
@@ -50,91 +51,51 @@ function fitCanvas(canvas, ctx) {
 
 // ---- Pointillist dot field --------------------------------------------------
 // A halftone grid: every dot's size follows a slowly drifting interference
-// field, so the panel reads as a moving pointillist texture. Dots are
-// springs: the pointer pushes them away, scrolling kicks them vertically
-// (and advances the field), and they settle back to rest.
+// field, so the panel reads as a quietly moving pointillist texture.
 export class DotField {
-  constructor(canvas, { spacing = 9, maxSize = 2.2, radius = 120, push = 28 } = {}) {
-    Object.assign(this, { canvas, spacing, maxSize, radius, push });
+  constructor(canvas, { spacing = 9, maxSize = 2.2 } = {}) {
+    Object.assign(this, { canvas, spacing, maxSize });
     this.ctx = canvas.getContext("2d");
-    this.pointer = null;
     this.time = 0;
     this.lastT = null;
-    this.scrollPhase = 0;
-    this.lastScroll = window.scrollY;
     this.refreshColor();
     this.resize();
     new ResizeObserver(() => { this.resize(); this.draw(); }).observe(canvas);
-    const host = canvas.parentElement;
-    host.addEventListener("pointermove", (e) => {
-      const b = canvas.getBoundingClientRect();
-      this.pointer = { x: e.clientX - b.left, y: e.clientY - b.top };
-    });
-    host.addEventListener("pointerleave", () => (this.pointer = null));
-    window.addEventListener("scroll", () => {
-      const d = window.scrollY - this.lastScroll;
-      this.lastScroll = window.scrollY;
-      this.scrollPhase += d * 0.004;
-      const kick = Math.max(-40, Math.min(40, d)) * 0.35;
-      for (let i = 0; i < this.n; i++) this.vy[i] += kick * this.jitter[i];
-    }, { passive: true });
     this.draw();
     if (!reduceMotion()) visibleLoop(canvas, (t) => this.frame(t));
   }
   refreshColor() { this.color = cssVar("--dot") || "#171410"; this.draw?.(); }
   resize() {
-    const [w, h] = fitCanvas(this.canvas, this.ctx);
-    this.w = w; this.h = h;
-    this.cols = Math.ceil(w / this.spacing) + 1;
-    this.rows = Math.ceil(h / this.spacing) + 1;
-    const n = (this.n = this.cols * this.rows);
-    this.dx = new Float32Array(n); this.dy = new Float32Array(n);
-    this.vx = new Float32Array(n); this.vy = new Float32Array(n);
-    this.jitter = Float32Array.from({ length: n }, () => 0.6 + Math.random() * 0.8);
+    [this.w, this.h] = fitCanvas(this.canvas, this.ctx);
+    this.cols = Math.ceil(this.w / this.spacing) + 1;
+    this.rows = Math.ceil(this.h / this.spacing) + 1;
   }
   field(x, y) {
     // Two drifting interference waves -> smooth 0..1 halftone density.
-    const t = this.time * 0.25 + this.scrollPhase;
+    const t = this.time * 0.25;
     const a = Math.sin(x * 0.012 + t) * Math.cos(y * 0.018 - t * 0.7);
     const b = Math.sin((x + y) * 0.007 - t * 0.5 + Math.sin(y * 0.01 + t) * 1.4);
     return Math.max(0, Math.min(1, 0.5 + 0.32 * a + 0.28 * b));
   }
   frame(t) {
     if (this.lastT === null) this.lastT = t;
-    const dt = Math.min(0.05, (t - this.lastT) / 1000);
+    this.time += Math.min(0.05, (t - this.lastT) / 1000);
     this.lastT = t;
-    this.time += dt;
-    const { pointer: p, radius: R, push, spacing: s, cols } = this;
-    for (let i = 0; i < this.n; i++) {
-      let fx = -this.dx[i] * 0.06, fy = -this.dy[i] * 0.06; // spring home
-      if (p) {
-        const hx = (i % cols) * s + this.dx[i] - p.x, hy = Math.floor(i / cols) * s + this.dy[i] - p.y;
-        const d2 = hx * hx + hy * hy;
-        if (d2 < R * R && d2 > 0.01) {
-          const d = Math.sqrt(d2), f = (1 - d / R) ** 2 * push * 0.12;
-          fx += (hx / d) * f; fy += (hy / d) * f;
-        }
-      }
-      this.vx[i] = (this.vx[i] + fx) * 0.82;
-      this.vy[i] = (this.vy[i] + fy) * 0.82;
-      this.dx[i] += this.vx[i];
-      this.dy[i] += this.vy[i];
-    }
     this.draw();
   }
   draw() {
-    if (!this.dx) return;
-    const { ctx, cols, spacing: s, maxSize } = this;
+    if (!this.cols) return;
+    const { ctx, spacing: s, maxSize } = this;
     ctx.clearRect(0, 0, this.w, this.h);
     ctx.fillStyle = this.color;
-    for (let i = 0; i < this.n; i++) {
-      const x0 = (i % cols) * s, y0 = Math.floor(i / cols) * s;
-      // Lighter behind the copy on the left so the text stays readable.
-      const shade = 0.35 + 0.65 * Math.min(1, x0 / (this.w * 0.62));
-      const disp = Math.min(1, Math.hypot(this.dx[i], this.dy[i]) / 18); // displaced dots swell a touch
-      const size = maxSize * (0.18 + 0.82 * this.field(x0, y0)) * shade + disp * 0.9;
-      if (size < 0.35) continue;
-      ctx.fillRect(x0 + this.dx[i] - size / 2, y0 + this.dy[i] - size / 2, size, size);
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const x = c * s, y = r * s;
+        // Lighter behind the copy on the left so the text stays readable.
+        const shade = 0.35 + 0.65 * Math.min(1, x / (this.w * 0.62));
+        const size = maxSize * (0.18 + 0.82 * this.field(x, y)) * shade;
+        if (size >= 0.35) ctx.fillRect(x - size / 2, y - size / 2, size, size);
+      }
     }
   }
 }
@@ -171,7 +132,6 @@ export class FiberHelix {
     this.to = "helix";
     this.morph = 1; // 0 -> `from`, 1 -> `to`; tweened by the caller (anime.js)
     this.time = 0;
-    this.frozen = false;
     this.tilt = { x: 0.38, y: 0, tx: 0.38, ty: 0 };
     this.lastT = null;
     this.refreshColors();
@@ -221,7 +181,7 @@ export class FiberHelix {
     this.lastT = t;
     this.tilt.x += (this.tilt.tx - this.tilt.x) * 0.06;
     this.tilt.y += (this.tilt.ty - this.tilt.y) * 0.06;
-    if (!this.frozen) this.time += dt;
+    this.time += dt;
     this.draw();
   }
   draw() {

@@ -166,6 +166,12 @@ def main() -> None:
             "equity": round(STARTING_CASH_USD + summary["total_pnl"], 2),
             **{k: summary[k] for k in ("realized_pnl", "unrealized_pnl", "total_pnl", "open_cost", "open_count", "closed_count")},
             "by_strategy": {s: t["total_pnl"] for s, t in summary["by_strategy"].items()},
+            # Per-strategy curve components, so the dashboard can chart one
+            # strategy on its own (realized vs. total, capital at risk).
+            "by_strategy_detail": {
+                s: {k: t[k] for k in ("total_pnl", "realized_pnl", "unrealized_pnl", "open_cost")}
+                for s, t in summary["by_strategy"].items()
+            },
         }) + "\n")
 
 

@@ -1,6 +1,12 @@
-"""Fetches short-dated, non-sports markets from Kalshi and Polymarket and
-turns them into venue-neutral relations.Contract objects -- with every bit
-of resolution detail each venue exposes packed into `context` for Jev.
+"""Fetches short-dated markets from Kalshi and Polymarket, keeps only the
+CULTURAL, ECONOMIC and GEOPOLITICAL events (the project owner's scope; decided by
+topics.py -- rules for clear-cut categories, Jev for grey areas), and turns
+them into venue-neutral relations.Contract objects with every bit of
+resolution detail each venue exposes packed into `context` for Jev.
+
+Two phases, so topic judgment happens once per EVENT before any contract
+is built:  fetch_*_events() -> topic_subjects() -> TopicClassifier ->
+*_contracts(events, topics).
 
 Verified live 2026-09-24:
 - Kalshi GET /events with with_nested_markets + min_close_ts/max_close_ts
@@ -9,14 +15,15 @@ Verified live 2026-09-24:
   Events carry category, mutually_exclusive and settlement_sources; markets
   carry top-of-book sizes (yes_bid_size_fp / yes_ask_size_fp).
 - Polymarket gamma /markets honours end_date_min/end_date_max. Markets
-  carry bestBid/bestAsk (for outcome[0]) and a per-market feeSchedule.
-Sports are excluded on both venues: the cross-venue sports model already
-covers them, and this scanner is for cultural/economic/political events.
+  carry bestBid/bestAsk (for outcome[0]) and a per-market feeSchedule. It
+  returns no category (600/600 None), so its fee-schedule name
+  (culture_fees, sports_fees_v3, ...) is the topic hint instead.
 """
 from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -24,8 +31,8 @@ import httpx
 from .kalshi_public import BASE as KALSHI_BASE
 from .polymarket_client import BASE as POLY_BASE
 from .relations import Contract
+from .topics import KALSHI_RULES, Subject
 
-EXCLUDED_KALSHI_CATEGORIES = {"Sports"}
 PAGE_PACING_S = 0.15
 
 
@@ -54,6 +61,34 @@ def _resolves_by(m: dict, horizon: datetime) -> bool:
     return close is not None and settle is not None and settle <= horizon
 
 
+@dataclass
+class VenueEvent:
+    """One event and its in-horizon markets, before topic filtering."""
+    venue: str
+    event_id: str
+    title: str
+    hint: str | None  # Kalshi category / Polymarket fee-schedule name
+    raw: dict
+    markets: list[dict] = field(default_factory=list)
+
+    @property
+    def key(self) -> str:
+        return f"{self.venue}:{self.event_id}"
+
+
+def topic_subjects(events: list[VenueEvent]) -> list[Subject]:
+    subjects = []
+    for e in events:
+        if e.venue == "kalshi":
+            sample = [m.get("yes_sub_title") or m.get("title", "") for m in e.markets]
+        else:
+            sample = [m.get("question", "") for m in e.markets]
+        subjects.append(Subject(key=e.key, venue=e.venue, title=e.title, hint=e.hint, sample=[s for s in sample if s]))
+    return subjects
+
+
+# ---- Kalshi ------------------------------------------------------------------
+
 def kalshi_context(event: dict, m: dict) -> str:
     sources = ", ".join(s.get("name", "") for s in event.get("settlement_sources") or [] if s.get("name"))
     lines = [
@@ -75,11 +110,14 @@ def kalshi_context(event: dict, m: dict) -> str:
     return "\n".join(lines)
 
 
-def fetch_kalshi_contracts(horizon_days: float = 7.0, max_pages: int = 120) -> list[Contract]:
+def fetch_kalshi_events(horizon_days: float = 21.0, max_pages: int = 200) -> list[VenueEvent]:
+    """Every event with at least one active market settling in the horizon.
+    Categories that rules exclude outright (Sports, Elections, ...) are
+    dropped here already -- no point carrying thousands of them further."""
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=horizon_days)
     client = httpx.Client(base_url=KALSHI_BASE, timeout=30.0)
-    out: list[Contract] = []
+    out: list[VenueEvent] = []
     cursor = None
     for _ in range(max_pages):
         params = {
@@ -92,31 +130,38 @@ def fetch_kalshi_contracts(horizon_days: float = 7.0, max_pages: int = 120) -> l
         r.raise_for_status()
         body = r.json()
         for event in body.get("events", []):
-            if event.get("category") in EXCLUDED_KALSHI_CATEGORIES:
+            cat = event.get("category")
+            if cat in KALSHI_RULES and KALSHI_RULES[cat] is None:
                 continue
-            for m in event.get("markets") or []:
-                if m.get("status") != "active" or not _resolves_by(m, horizon):
-                    continue
-                out.append(Contract(
-                    venue="kalshi",
-                    ticker=m["ticker"],
-                    event_id=event["event_ticker"],
-                    category=event.get("category"),
-                    title=f"{m.get('title', '')} -- {m.get('yes_sub_title') or ''}",
-                    context=kalshi_context(event, m),
-                    close_time=m.get("close_time"),
-                    yes_bid=_f(m.get("yes_bid_dollars")),
-                    yes_ask=_f(m.get("yes_ask_dollars")),
-                    yes_bid_size=_f(m.get("yes_bid_size_fp")),
-                    yes_ask_size=_f(m.get("yes_ask_size_fp")),
-                    event_mutually_exclusive=bool(event.get("mutually_exclusive")),
-                ))
+            markets = [m for m in event.get("markets") or [] if m.get("status") == "active" and _resolves_by(m, horizon)]
+            if markets:
+                out.append(VenueEvent("kalshi", event["event_ticker"], event.get("title", ""), cat, event, markets))
         cursor = body.get("cursor")
         if not cursor:
             break
         time.sleep(PAGE_PACING_S)
     return out
 
+
+def kalshi_contracts(events: list[VenueEvent], topics: dict[str, str | None]) -> list[Contract]:
+    out = []
+    for e in events:
+        topic = topics.get(e.key)
+        if e.venue != "kalshi" or not topic:
+            continue
+        for m in e.markets:
+            out.append(Contract(
+                venue="kalshi", ticker=m["ticker"], event_id=e.event_id, category=e.hint,
+                title=f"{m.get('title', '')} -- {m.get('yes_sub_title') or ''}",
+                context=kalshi_context(e.raw, m), close_time=m.get("close_time"),
+                yes_bid=_f(m.get("yes_bid_dollars")), yes_ask=_f(m.get("yes_ask_dollars")),
+                yes_bid_size=_f(m.get("yes_bid_size_fp")), yes_ask_size=_f(m.get("yes_ask_size_fp")),
+                event_mutually_exclusive=bool(e.raw.get("mutually_exclusive")), topic=topic,
+            ))
+    return out
+
+
+# ---- Polymarket ----------------------------------------------------------------
 
 def _is_sports(pm: dict) -> bool:
     return bool(pm.get("sportsMarketType") or pm.get("gameStartTime")
@@ -137,49 +182,74 @@ def polymarket_context(pm: dict) -> str:
     ])
 
 
-def fetch_polymarket_contracts(horizon_days: float = 7.0, max_offset: int = 3000, page_size: int = 100) -> list[Contract]:
+def fetch_polymarket_events(horizon_days: float = 21.0, window_days: float = 2.0, max_offset: int = 3000,
+                            page_size: int = 100) -> list[VenueEvent]:
+    """Plain Yes/No, non-sports markets ending in the horizon, grouped by
+    their Polymarket event.
+
+    Gamma refuses offsets past ~2,000 per query (seen live, HTTP 422), which
+    silently capped a whole-horizon fetch at the 2,000 highest-volume rows.
+    So the horizon is walked in `window_days` slices, each with its own
+    2,000-row allowance, and markets are de-duplicated by slug."""
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=horizon_days)
-    out: list[Contract] = []
-    for offset in range(0, max_offset, page_size):
-        r = httpx.get(f"{POLY_BASE}/markets", params={
-            "closed": "false", "active": "true", "limit": page_size, "offset": offset,
-            "order": "volume24hr", "ascending": "false",
-            "end_date_min": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end_date_max": horizon.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }, timeout=30.0)
-        if r.status_code == 422:
-            break  # gamma refuses offsets past ~2,000 (seen live): keep what we have
-        r.raise_for_status()
-        page = r.json()
-        if not page:
-            break
-        for pm in page:
-            if _is_sports(pm) or not pm.get("acceptingOrders", True):
-                continue
-            try:
-                outcomes = json.loads(pm.get("outcomes") or "[]")
-            except json.JSONDecodeError:
-                continue
-            if [o.lower() for o in outcomes] != ["yes", "no"]:
-                continue  # keep plain Yes/No markets: YES has one unambiguous meaning
+    by_event: dict[str, VenueEvent] = {}
+    seen: set[str] = set()
+    start = now
+    while start < horizon:
+        end = min(horizon, start + timedelta(days=window_days))
+        for offset in range(0, max_offset, page_size):
+            r = httpx.get(f"{POLY_BASE}/markets", params={
+                "closed": "false", "active": "true", "limit": page_size, "offset": offset,
+                "order": "volume24hr", "ascending": "false",
+                "end_date_min": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "end_date_max": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }, timeout=30.0)
+            if r.status_code == 422:
+                break  # this window's offset ceiling: move on to the next window
+            r.raise_for_status()
+            page = r.json()
+            if not page:
+                break
+            for pm in page:
+                if pm["slug"] in seen or _is_sports(pm) or not pm.get("acceptingOrders", True):
+                    continue
+                seen.add(pm["slug"])
+                try:
+                    outcomes = json.loads(pm.get("outcomes") or "[]")
+                except json.JSONDecodeError:
+                    continue
+                if [o.lower() for o in outcomes] != ["yes", "no"]:
+                    continue  # keep plain Yes/No markets: YES has one unambiguous meaning
+                event = (pm.get("events") or [{}])[0]
+                eid = event.get("slug") or pm["slug"]
+                ve = by_event.get(eid)
+                if ve is None:
+                    ve = by_event[eid] = VenueEvent("polymarket", eid, event.get("title") or pm.get("question", ""), pm.get("feeType"), event)
+                ve.markets.append(pm)
+            if len(page) < page_size:
+                break
+            time.sleep(PAGE_PACING_S)
+        start = end
+    return list(by_event.values())
+
+
+def polymarket_contracts(events: list[VenueEvent], topics: dict[str, str | None]) -> list[Contract]:
+    out = []
+    for e in events:
+        topic = topics.get(e.key)
+        if e.venue != "polymarket" or not topic:
+            continue
+        for pm in e.markets:
             sched = pm.get("feeSchedule") or {}
             fees_on = pm.get("feesEnabled") and pm.get("feeType") != "zero_fees"
-            event = (pm.get("events") or [{}])[0]
             out.append(Contract(
-                venue="polymarket",
-                ticker=f"PM-{pm['slug']}",
-                event_id=f"PM-{event.get('slug') or pm['slug']}",
-                category=event.get("category"),
-                title=pm.get("question", ""),
-                context=polymarket_context(pm),
-                close_time=pm.get("endDate"),
-                yes_bid=_f(pm.get("bestBid")),
-                yes_ask=_f(pm.get("bestAsk")),
+                venue="polymarket", ticker=f"PM-{pm['slug']}", event_id=f"PM-{e.event_id}", category=pm.get("feeType"),
+                title=pm.get("question", ""), context=polymarket_context(pm), close_time=pm.get("endDate"),
+                yes_bid=_f(pm.get("bestBid")), yes_ask=_f(pm.get("bestAsk")),
                 fee_rate=float(sched.get("rate", 0.0)) if fees_on else 0.0,
-                fee_exponent=float(sched.get("exponent", 1.0)),
+                fee_exponent=float(sched.get("exponent", 1.0)), topic=topic,
             ))
-        time.sleep(PAGE_PACING_S)
     return out
 
 

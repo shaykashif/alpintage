@@ -152,6 +152,7 @@ class Contract:
     event_mutually_exclusive: bool = False
     fee_rate: float = 0.0  # Polymarket taker rate; unused for Kalshi
     fee_exponent: float = 1.0
+    topic: str | None = None  # "cultural" | "economic" | "geopolitical" (topics.py)
 
     def ask(self, side: str) -> float | None:
         """Price to BUY `side`. A NO ask is the complement of the YES bid."""
@@ -271,6 +272,18 @@ def relation_arb(relation: str, a: Contract, b: Contract, max_notional_per_leg: 
         return None
     legs = [ArbLeg(a, side_a, pa), ArbLeg(b, side_b, pb)]
     return _evaluate(relation, legs, 1.0, max_notional_per_leg, max_qty)
+
+
+def missing_quotes(relation: str, a: Contract, b: Contract) -> list[str]:
+    """Why relation_arb() returned None: which leg can't be bought. Buying
+    YES needs someone selling YES (an ask below $1); buying NO needs
+    someone bidding YES (a bid above $0). Seen live on nearly-decided
+    strikes, where one side of the book is simply empty."""
+    out = []
+    for c, side, label in ((a, _LEGS[relation][0], "A"), (b, _LEGS[relation][1], "B")):
+        if c.ask(side) is None:
+            out.append(f"no seller of YES on {label}" if side == "yes" else f"no YES bid on {label} (so no NO to buy)")
+    return out
 
 
 def me_event_arb(contracts: list[Contract], max_notional_per_leg: float = 10.0, max_qty: int = 500) -> Arb | None:
