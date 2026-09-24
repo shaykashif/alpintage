@@ -123,6 +123,8 @@ def classify_pairs(pairs, cache: dict, max_new: int, workers: int) -> dict[str, 
                 continue
             cache[row["key"]] = row
             new_rows.append(row)
+            if len(new_rows) % 100 == 0:  # a first run asks thousands of calls -- show it's alive
+                print(f"  ...{len(new_rows)}/{len(todo)} pairs judged", flush=True)
     if new_rows:
         CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with CACHE_PATH.open("a", encoding="utf-8") as f:

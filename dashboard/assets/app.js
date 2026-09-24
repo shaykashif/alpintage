@@ -43,7 +43,10 @@ function countTo(el, value, fmt, { duration = 900 } = {}) {
   const key = el.id;
   const from = shown.get(key);
   shown.set(key, value);
-  if (value === null || value === undefined || reduce) { el.textContent = fmt(value); return; }
+  // Nothing to tween (or motion off): write it now. A re-render with an
+  // unchanged value -- e.g. a filter click rebuilding the stat boxes --
+  // otherwise left the "--" placeholder, since anime skips a no-op tween.
+  if (value === null || value === undefined || reduce || from === value) { el.textContent = fmt(value); return; }
   const firstShow = from === undefined || from === null;
   const o = { v: firstShow ? 0 : from };
   animate(o, { v: value, duration: firstShow ? duration + 300 : duration, ease: "outExpo", onUpdate: () => (el.textContent = fmt(o.v)) });

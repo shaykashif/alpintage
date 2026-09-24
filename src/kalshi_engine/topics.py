@@ -179,6 +179,8 @@ class TopicClassifier:
                 if row:
                     self.cache[s.key] = row
                     new_rows.append(row)
+                    if len(new_rows) % 100 == 0:
+                        print(f"  ...{len(new_rows)} events topic-judged", flush=True)
         self.stats["asked"] = len(new_rows)
         if new_rows:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)

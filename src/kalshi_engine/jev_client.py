@@ -93,7 +93,7 @@ def ask_noul_multi(state: str, questions: dict[str, str], timeout: float = 30.0)
     # couple of times with backoff before letting the caller defer the item.
     for attempt in range(3):
         r = httpx.post(TYPESAFE_URL, json=body, headers=headers, timeout=timeout)
-        if r.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
+        if r.status_code not in (429, 500, 502, 503, 504, 529) or attempt == 2:
             break
         time.sleep(0.8 * 2 ** attempt)
     r.raise_for_status()
