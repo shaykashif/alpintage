@@ -235,6 +235,55 @@ def classify(probs: dict[str, float], threshold: float = RELATION_THRESHOLD,
     return sorted(confident), None
 
 
+# --- Structural veto: ranked lists -------------------------------------------
+# Seen live (2026-09-24): Jev called "Moonshot is the THIRD-best Chinese AI
+# company" and "Zhipu is the SECOND-best" mutually exclusive, and cleared
+# the same-underlying gate (same list). Different positions on one list can
+# both be YES -- Zhipu #2 and Moonshot #3 -- so "not both" (and "at least
+# one") only holds between markets about the SAME position. Checked here in
+# code, since Jev got it wrong with confidence; caught that time only by the
+# implausible-edge cap.
+
+_ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+}
+_ORD = r"(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d{1,3}(?:st|nd|rd|th))"
+# An ordinal only counts as a rank next to ranking words, so "first quarter"
+# or "second round" never do.
+_RANK_PATTERNS = [
+    re.compile(_ORD + r"[\s-]+(?:best|largest|biggest|most|highest|lowest|top|ranked|place|strongest|richest|popular)\b"),
+    re.compile(r"(?:#|\bno\.\s*|\bnumber\s+|\branked\s+|\brank\s+#?)(\d{1,3})\b"),
+    re.compile(r"\bin\s+" + _ORD + r"\s+place\b"),
+]
+_RANK_LINES = ("Event:", "Market:", "Question:", "YES means:")
+
+
+def _rank_value(tok: str) -> int:
+    return _ORDINAL_WORDS.get(tok) or int(re.match(r"\d+", tok).group())
+
+
+def list_ranks(c: Contract) -> set[int]:
+    """List positions a market's headline names ("second-best", "#2",
+    "No. 2", "2nd place"). Reads the title and the headline lines of its
+    context -- never the rules, which mention other positions for ties."""
+    lines = [c.title] + [l for l in c.context.splitlines() if l.startswith(_RANK_LINES)]
+    text = " ".join(lines).lower()
+    return {_rank_value(m.group(1)) for p in _RANK_PATTERNS for m in p.finditer(text)}
+
+
+def structural_veto(rels: list[str], a: Contract, b: Contract) -> str | None:
+    """Why a Jev-confirmed relation set must be dropped regardless of its
+    probabilities, or None. Currently: "not both" / "at least one" between
+    markets about different positions on a ranked list."""
+    if not {"mutually_exclusive", "exhaustive"} & set(rels):
+        return None
+    ra, rb = list_ranks(a), list_ranks(b)
+    if len(ra) == 1 and len(rb) == 1 and ra != rb:
+        return f"different list positions (#{min(ra)} vs #{min(rb)}) can both resolve YES"
+    return None
+
+
 def pair_key(a: Contract, b: Contract) -> str:
     """Stable cache key: changes if either market's rules text changes."""
     return f"{a.ticker}|{a.context_hash}||{b.ticker}|{b.context_hash}"

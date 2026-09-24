@@ -228,3 +228,38 @@ def test_missing_quotes_names_the_empty_side():
     b = C("B", 0.99, 1.0)
     assert relations.relation_arb("a_implies_b", a, b) is None
     assert relations.missing_quotes("a_implies_b", a, b) == ["no YES bid on A (so no NO to buy)", "no seller of YES on B"]
+
+
+# --- structural veto: ranked lists -----------------------------------------
+
+def _ranked(ticker, title, venue="polymarket"):
+    return relations.Contract(venue=venue, ticker=ticker, event_id=ticker, category=None, title=title,
+                              context=f"Question: {title}\nRules: ties for second or third place resolve per the list.",
+                              close_time=None, yes_bid=None, yes_ask=None)
+
+
+def test_rank_extraction_needs_ranking_context():
+    assert relations.list_ranks(_ranked("x", "Will Moonshot be the third-best Chinese AI company?")) == {3}
+    assert relations.list_ranks(_ranked("x", "Will zptai be the second best Chinese AI company?")) == {2}
+    assert relations.list_ranks(_ranked("x", "Will this song be #1 on the Hot 100?")) == {1}
+    assert relations.list_ranks(_ranked("x", "Will X finish in 2nd place?")) == {2}
+    assert relations.list_ranks(_ranked("x", "First quarter GDP above 2%?")) == set()
+    assert relations.list_ranks(_ranked("x", "Will the second round be held?")) == set()
+
+
+def test_not_both_vetoed_between_different_list_positions():
+    # The live case: #3 and #2 on the same list can both be YES.
+    a = _ranked("PM-moonshot", "Will Moonshot be the third best Chinese AI company at the end of September 2026?")
+    b = _ranked("PM-zptai", "Will zptai be the second best Chinese AI company at the end of September 2026?")
+    assert "different list positions" in relations.structural_veto(["mutually_exclusive"], a, b)
+    assert relations.structural_veto(["mutually_exclusive", "exhaustive"], a, b)
+
+
+def test_not_both_kept_for_the_same_position_and_implications_untouched():
+    a = _ranked("PM-a", "Will Moonshot be the second best Chinese AI company?")
+    b = _ranked("PM-b", "Will zptai be the second best Chinese AI company?")
+    assert relations.structural_veto(["mutually_exclusive"], a, b) is None
+    c = _ranked("PM-c", "Will zptai be the third best Chinese AI company?")
+    assert relations.structural_veto(["a_implies_b"], a, c) is None
+    plain = _ranked("PM-d", "Will the Fed cut rates in October?")
+    assert relations.structural_veto(["mutually_exclusive"], a, plain) is None
