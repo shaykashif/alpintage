@@ -282,19 +282,58 @@ def fetch_kalshi_quotes(tickers: list[str], client: httpx.Client | None = None) 
     return out
 
 
-def fetch_polymarket_quotes(slugs: list[str]) -> dict[str, Quote]:
-    """Best bid/ask for specific Polymarket markets, keyed by "PM-<slug>".
-    Gamma defaults to 20 rows per call -- `limit` must be passed or a batch
-    silently comes back short (seen live: 20 of 35)."""
-    out: dict[str, Quote] = {}
-    for i in range(0, len(slugs), QUOTE_BATCH):
-        batch = slugs[i:i + QUOTE_BATCH]
+CLOB_BASE = "https://clob.polymarket.com"
+
+# slug -> YES outcome token id. A market's token ids never change, so each
+# is looked up once per process (Gamma) and reused by every tick and stream.
+_YES_TOKENS: dict[str, str] = {}
+
+
+def polymarket_yes_tokens(slugs: list[str]) -> dict[str, str]:
+    """{slug: YES token id} for open markets. The order book and the market
+    WebSocket are keyed by token, not slug. clobTokenIds pairs with
+    `outcomes`; the token whose outcome is "Yes" is the YES book."""
+    missing = [s for s in dict.fromkeys(slugs) if s not in _YES_TOKENS]
+    for i in range(0, len(missing), QUOTE_BATCH):
+        batch = missing[i:i + QUOTE_BATCH]
         r = httpx.get(f"{POLY_BASE}/markets", params=[("slug", s) for s in batch] + [("limit", QUOTE_BATCH)], timeout=10.0)
         r.raise_for_status()
         for m in r.json():
             if m.get("closed") or not m.get("acceptingOrders", True):
                 continue
-            out[f"PM-{m['slug']}"] = Quote(_f(m.get("bestBid")), _f(m.get("bestAsk")))
+            tokens = json.loads(m.get("clobTokenIds") or "[]")
+            outcomes = [o.lower() for o in json.loads(m.get("outcomes") or "[]")]
+            if "yes" in outcomes and len(tokens) == len(outcomes):
+                _YES_TOKENS[m["slug"]] = tokens[outcomes.index("yes")]
+    return {s: _YES_TOKENS[s] for s in slugs if s in _YES_TOKENS}
+
+
+def top_of_book(bids: list[dict], asks: list[dict]) -> Quote:
+    """Best bid/ask (and the size resting there) from CLOB levels. Level
+    order isn't relied on: the REST book lists bids ascending and asks
+    descending, the stream makes no promise."""
+    bid = max(bids, key=lambda lv: float(lv["price"]), default=None)
+    ask = min(asks, key=lambda lv: float(lv["price"]), default=None)
+    return Quote(_f(bid["price"]) if bid else None, _f(ask["price"]) if ask else None,
+                 _f(bid["size"]) if bid else None, _f(ask["size"]) if ask else None)
+
+
+def fetch_polymarket_quotes(slugs: list[str]) -> dict[str, Quote]:
+    """Best bid/ask for specific Polymarket markets, keyed by "PM-<slug>",
+    read from the live order book (CLOB POST /books) -- not Gamma's
+    bestBid/bestAsk, which trailed the book (seen live 2026-09-24: Gamma
+    0.6c/4.4c while the book stood at 0.3c/3.3c)."""
+    tokens = polymarket_yes_tokens(slugs)
+    slug_of = {t: s for s, t in tokens.items()}
+    ids = list(slug_of)
+    out: dict[str, Quote] = {}
+    for i in range(0, len(ids), QUOTE_BATCH):
+        r = httpx.post(f"{CLOB_BASE}/books", json=[{"token_id": t} for t in ids[i:i + QUOTE_BATCH]], timeout=10.0)
+        r.raise_for_status()
+        for book in r.json():
+            slug = slug_of.get(book.get("asset_id"))
+            if slug:
+                out[f"PM-{slug}"] = top_of_book(book.get("bids") or [], book.get("asks") or [])
     return out
 
 

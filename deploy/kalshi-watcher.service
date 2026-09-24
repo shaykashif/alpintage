@@ -1,5 +1,5 @@
 [Unit]
-Description=Kalshi engine: relation-arb price watcher, every 3 s (paper only)
+Description=Kalshi engine: relation-arb watcher, streaming order books (paper only)
 After=network-online.target
 Wants=network-online.target
 
@@ -8,8 +8,10 @@ Type=simple
 WorkingDirectory=/opt/alpintage
 # Re-prices the confirmed relations kalshi-loop's scanner writes to
 # data/relation_watchlist.json. Idles harmlessly until the first scan has
-# written one; picks up each new watchlist on its own.
-ExecStart=/opt/alpintage/.venv/bin/python scripts/run_relation_watcher.py --interval-s 3 --paper
+# written one; picks up each new watchlist on its own. --stream holds both
+# venues' order-book WebSockets open (Kalshi needs KALSHI_KEY_ID and
+# KALSHI_KEY_PATH in .env; without them it polls Kalshi every --interval-s).
+ExecStart=/opt/alpintage/.venv/bin/python scripts/run_relation_watcher.py --stream --interval-s 3 --paper
 Restart=on-failure
 RestartSec=15
 EnvironmentFile=/opt/alpintage/.env

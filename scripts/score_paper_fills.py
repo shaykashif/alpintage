@@ -10,7 +10,8 @@ fee). Writes:
 
 Positions fully closed by an exit need no API call; only still-held
 tickers are fetched (paced, to stay clear of Kalshi's 429s). Polymarket
-legs of relation arbs ("PM-<slug>") are fetched from Polymarket instead,
+legs of relation arbs ("PM-<slug>") are fetched from Polymarket instead
+(status from Gamma, bid/ask from the CLOB order book),
 and charged Polymarket's own taker fee on exit.
 
 Relation-arb legs bought together (same arb_group) are valued as ONE
@@ -36,7 +37,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from kalshi_engine import ledger  # noqa: E402
 from kalshi_engine.fees import taker_fee  # noqa: E402
 from kalshi_engine.kalshi_public import PublicClient  # noqa: E402
-from kalshi_engine.relation_sources import fetch_polymarket_market, polymarket_as_kalshi_shape  # noqa: E402
+from kalshi_engine.relation_sources import (  # noqa: E402
+    fetch_polymarket_market, fetch_polymarket_quotes, polymarket_as_kalshi_shape,
+)
 
 FILLS_PATH = ledger.DEFAULT_LOG_PATH
 SUMMARY_PATH = Path(__file__).resolve().parent.parent / "data" / "paper_pnl_summary.json"
@@ -51,7 +54,15 @@ def fetch_market(client: PublicClient, ticker: str) -> dict | None:
     mapped onto the Kalshi fields scoring reads."""
     if ticker.startswith("PM-"):
         pm = fetch_polymarket_market(ticker[3:])
-        return polymarket_as_kalshi_shape(pm) if pm else None
+        if not pm:
+            return None
+        shaped = polymarket_as_kalshi_shape(pm)
+        if shaped["status"] == "active":
+            # Mark against the live order book, not Gamma's lagging bestBid/bestAsk.
+            q = fetch_polymarket_quotes([ticker[3:]]).get(ticker)
+            if q:
+                shaped["yes_bid_dollars"], shaped["yes_ask_dollars"] = q.yes_bid, q.yes_ask
+        return shaped
     return client.market(ticker)
 
 
