@@ -1,11 +1,13 @@
 // Pternas dashboard: the cultural & economic relationship-arbitrage book.
 // Renders /api/summary (read-only; no live API calls server-side) and
-// refreshes every 60s. Motion via anime.js v4; every animation is skipped
+// refreshes every 60s; the comparisons table's price checks also update
+// every few seconds from /api/live (the relation watcher's latest pass). Motion via anime.js v4; every animation is skipped
 // under prefers-reduced-motion.
 import { animate, stagger } from "https://cdn.jsdelivr.net/npm/animejs@4.5.0/+esm";
 import { DotField, FiberHelix, Lcd } from "/assets/visuals.js?v=6";
 
 const REFRESH_MS = 60_000;
+const LIVE_MS = 3_000;
 const STRATEGY = "relation_arb";
 const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const $ = (id) => document.getElementById(id);
@@ -54,11 +56,81 @@ function countTo(el, value, fmt, { duration = 900 } = {}) {
   animate(o, { v: value, duration: firstShow ? duration + 300 : duration, ease: "outExpo", onUpdate: () => (el.textContent = fmt(o.v)) });
 }
 
+// ---- first-load draw-in: every box's rules are traced as if drawn by hand,
+// then its contents fade in. Each [data-reveal] group draws once, when it
+// first scrolls into view. Strokes sit exactly on the real rules (1px gaps
+// between cells, outer borders, section underlines), which replace them
+// when done. Web Animations API, so it doesn't depend on anime.js loading.
+const DRAW_MS = 750, DRAW_STAGGER = 45, FADE_MS = 450;
+function drawPaths(group) {
+  const g = group.getBoundingClientRect();
+  const paths = [];
+  const rect = (el, grow) => {
+    const r = el.getBoundingClientRect();
+    const x = r.left - g.left - grow, y = r.top - g.top - grow, w = r.width + 2 * grow, h = r.height + 2 * grow;
+    paths.push({ d: `M${x} ${y}H${x + w}V${y + h}H${x}Z` });
+  };
+  if (group.classList.contains("section-head")) {
+    const y = g.height - 0.5;
+    paths.push({ d: `M0 ${y}H${g.width}`, ink: true });
+    return paths;
+  }
+  rect(group, -0.5); // outer border, centered on its 1px
+  if (group.classList.contains("hero")) {
+    const v = group.querySelector(".hero-visual");
+    const cs = v && getComputedStyle(v);
+    if (cs && parseFloat(cs.borderLeftWidth)) { const x = v.getBoundingClientRect().left - g.left + 0.5; paths.push({ d: `M${x} 0V${g.height}` }); }
+    else if (cs && parseFloat(cs.borderTopWidth)) { const y = v.getBoundingClientRect().top - g.top + 0.5; paths.push({ d: `M0 ${y}H${g.width}` }); }
+    return paths;
+  }
+  // Grid cells: their 1px gaps are the inner rules, so trace each cell grown half a pixel.
+  group.querySelectorAll(":scope > *, .stats-row > *").forEach((el) => rect(el, 0.5));
+  return paths;
+}
+function drawGroup(group) {
+  const g = group.getBoundingClientRect();
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("draw-svg");
+  svg.setAttribute("aria-hidden", "true");
+  Object.assign(svg.style, { left: `${g.left + scrollX}px`, top: `${g.top + scrollY}px`, width: `${g.width}px`, height: `${g.height}px` });
+  const anims = [];
+  drawPaths(group).forEach((p, i) => {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", p.d);
+    path.setAttribute("pathLength", "1");
+    path.setAttribute("stroke-dasharray", "1");
+    path.setAttribute("stroke-dashoffset", "1");
+    if (p.ink) path.classList.add("ink");
+    svg.appendChild(path);
+    anims.push(path.animate({ strokeDashoffset: [1, 0] }, { duration: DRAW_MS, delay: Math.min(i, 14) * DRAW_STAGGER, easing: "cubic-bezier(.65,0,.35,1)", fill: "forwards" }));
+  });
+  document.body.appendChild(svg);
+  const lineMs = DRAW_MS + Math.min(anims.length - 1, 14) * DRAW_STAGGER;
+  const content = group.querySelectorAll(".section-head > *, .hero > *, .cell > *, .stats-row > * > *");
+  const targets = group.matches(".section-head, .hero") ? group.children : content;
+  const fades = [...targets].map((el, i) => el.animate({ opacity: [0, 1] }, { duration: FADE_MS, delay: lineMs * 0.55 + Math.min(i, 10) * 30, fill: "forwards" }));
+  Promise.all([...anims, ...fades].map((a) => a.finished)).then(() => {
+    group.classList.add("drawn"); // real rules and contents take over, at the same pixels
+    svg.remove();
+    fades.forEach((a) => a.cancel());
+  });
+}
 function revealOnce() {
   if (window.__revealed) return;
-  window.__revealed = true;
-  if (reduce) return;
-  animate("[data-reveal]", { opacity: [0, 1], translateY: [14, 0], duration: 800, ease: "outExpo", delay: stagger(80) });
+  window.__revealed = true; // tells index.html's fallback not to un-hide everything
+  const groups = document.querySelectorAll("[data-reveal]");
+  if (reduce || !("IntersectionObserver" in window)) { groups.forEach((g) => g.classList.add("drawn")); return; }
+  const io = new IntersectionObserver((entries) => entries.forEach((e) => {
+    if (!e.isIntersecting) return;
+    io.unobserve(e.target);
+    drawGroup(e.target);
+  }), { threshold: 0.12 });
+  groups.forEach((g) => io.observe(g));
+  // Jumped past without it ever entering view (End key, fast scroll): show it, undrawn.
+  const skipPassed = () => groups.forEach((g) => {
+    if (!g.classList.contains("drawn") && g.getBoundingClientRect().bottom < 0) { io.unobserve(g); g.classList.add("drawn"); }
+  });
+  addEventListener("scroll", skipPassed, { passive: true });
 }
 
 const seenRows = new WeakSet();
@@ -74,7 +146,7 @@ let dots, helix, lastData = null;
 function currentTheme() {
   const set = document.documentElement.dataset.theme;
   if (set) return set;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return "light"; // default regardless of the OS setting
 }
 function applyTheme(theme, persist) {
   document.documentElement.dataset.theme = theme;
@@ -85,11 +157,6 @@ function applyTheme(theme, persist) {
   if (lastData) renderCharts(lastData, { animateLines: false });
 }
 document.querySelectorAll("[data-theme-set]").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themeSet, true)));
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  let saved = null;
-  try { saved = localStorage.getItem("pternas-theme"); } catch (e) { /* ignore */ }
-  if (!saved) { delete document.documentElement.dataset.theme; applyTheme(currentTheme(), false); }
-});
 
 // ---- hero visuals ---------------------------------------------------------------
 dots = new DotField($("dots"));
@@ -159,8 +226,71 @@ function curve(d) {
 }
 
 // ---- renderers --------------------------------------------------------------------
+/** Nothing traded yet: every PnL figure would read $0.00, so the page leads
+ *  with the comparisons instead (hero numbers + section order). The first
+ *  trade switches back to the PnL layout. */
+const cents = (x) => Math.round((x ?? 0) * 100);
+function bookEmpty(b) {
+  return !b.open && !b.closed && !cents(b.total) && !cents(b.realized) && !cents(b.unrealized) && !cents(b.capital);
+}
+function comparisonCounts(d) {
+  const c = (d.relations || {}).comparisons || {};
+  const n = c.counts || {};
+  const markets = Object.values(c.universe || {}).flatMap((v) => Object.values(v)).reduce((a, x) => a + x, 0);
+  return {
+    live: c.live_pairs ?? 0,
+    confirmed: (n.violation || 0) + (n.consistent || 0) + (n.unpriced || 0),
+    cross: n.cross_venue || 0,
+    markets,
+  };
+}
+
+let heroMode = null;
+function setHeroMode(mode) {
+  if (mode === heroMode) return;
+  heroMode = mode;
+  const labels = mode === "comparisons"
+    ? ["PAIRS COMPARED", "Relations confirmed", "Kalshi × Polymarket", "Markets in scope"]
+    : ["TOTAL PNL", "Realized", "Unrealized", "Capital at risk"];
+  $("lcd-unit").textContent = labels[0];
+  labels.slice(1).forEach((t, i) => ($(`h-k${i}`).textContent = t));
+  $("pnl-sign").hidden = mode === "comparisons";
+  $("pnl-lcd").setAttribute("aria-label", mode === "comparisons" ? "market pairs compared" : "total PnL");
+  lcd.decimals = mode === "comparisons" ? 0 : 2;
+  ["lcd", "h-realized", "h-unrealized", "h-capital"].forEach((k) => shown.delete(k)); // don't tween across units
+  // Section order: comparisons first while there's no book to show.
+  const main = $("top"), cmp = $("comparisons");
+  if (mode === "comparisons") main.insertBefore(cmp, $("book")); // second, after Relationship arbitrage
+  else main.insertBefore(cmp, $("positions"));
+  main.querySelectorAll(":scope > .section .section-index").forEach((el, i) => (el.textContent = String(i + 1).padStart(2, "0")));
+}
+
 function renderHero(d) {
   const b = book(d), rel = d.relations || {};
+  if (bookEmpty(b)) {
+    setHeroMode("comparisons");
+    const c = comparisonCounts(d);
+    const from = shown.get("lcd") ?? 0;
+    shown.set("lcd", c.live);
+    if (reduce) lcd.render(c.live);
+    else { const o = { v: from }; animate(o, { v: c.live, duration: 1400, ease: "outExpo", onUpdate: () => lcd.render(Math.round(o.v)) }); }
+    const int = (x) => Math.round(x ?? 0).toLocaleString();
+    countTo($("h-realized"), c.confirmed, int);
+    countTo($("h-unrealized"), c.cross, int);
+    countTo($("h-capital"), c.markets, int);
+    ["h-realized", "h-unrealized"].forEach((id) => ($(id).className = "v"));
+  } else {
+    setHeroMode("pnl");
+    renderPnlHero(b);
+  }
+  $("hero-foot").innerHTML =
+    `<span><b>${(rel.pairs_judged ?? 0).toLocaleString()}</b> market pairs judged</span>` +
+    `<span><b>${(rel.opportunities_logged ?? 0).toLocaleString()}</b> violations priced</span>` +
+    `<span><b>${rel.traded ?? 0}</b> paper-traded</span>` +
+    `<span><b>${b.open}</b> open positions</span>`;
+}
+
+function renderPnlHero(b) {
   const sign = $("pnl-sign");
   sign.textContent = b.total > 0 ? "+" : b.total < 0 ? MINUS : "±";
   sign.className = "lcd-sign num " + signClass(b.total);
@@ -174,12 +304,6 @@ function renderHero(d) {
   countTo($("h-capital"), b.capital, (x) => usd(x, false));
   $("h-realized").className = "v " + signClass(b.realized);
   $("h-unrealized").className = "v " + signClass(b.unrealized);
-
-  $("hero-foot").innerHTML =
-    `<span><b>${(rel.pairs_judged ?? 0).toLocaleString()}</b> market pairs judged</span>` +
-    `<span><b>${(rel.opportunities_logged ?? 0).toLocaleString()}</b> violations priced</span>` +
-    `<span><b>${rel.traded ?? 0}</b> paper-traded</span>` +
-    `<span><b>${b.open}</b> open positions</span>`;
 }
 
 function renderBook(d) {
@@ -307,6 +431,25 @@ function marketCell(m) {
   return `<td class="mkt"><div class="t">${esc(m.title)}</div><div class="m">${esc(m.venue)} · ${esc(m.topic || "")} · ${esc(m.ticker)}</div></td>`;
 }
 
+// Live overlay: pair id ("A|B") -> the watcher's latest {status, edge, note}.
+// Only confirmed relations are watched; other rows keep their scan values.
+let live = { running: false, byPair: new Map(), at: null };
+const pairId = (r) => `${r.a.ticker}|${r.b.ticker}`;
+function current(r) {
+  const l = r.relations.length && live.running ? live.byPair.get(pairId(r)) : null;
+  return l ? { ...r, status: l.status, edge: l.edge, note: l.note, live: true } : r;
+}
+/** Green for a violation (profit), red for a negative edge (how far from one). */
+const priceClass = (r) => (r.status === "violation" ? "pos" : typeof r.edge === "number" && r.edge < 0 ? "neg" : "");
+function priceCell(r) {
+  const val = r.edge === null || r.edge === undefined ? "—" : esc(usd(r.edge)) + "/set";
+  const why = r.status === "unpriced" && r.note ? `<span class="why">${esc(r.note)}</span>` : "";
+  return `${val}${why}`;
+}
+function liveTag() {
+  return live.running ? ` · <span class="live-dot" aria-hidden="true"></span>prices live, checked ${esc(ago(live.at))}` : "";
+}
+
 function renderComparisons(d) {
   const c = (d.relations || {}).comparisons;
   const el = $("cmp-table");
@@ -330,22 +473,22 @@ function renderComparisons(d) {
   ];
   $("cmp-stats").innerHTML = stats.map(([k], i) => `<div class="kv"><div class="k">${esc(k)}</div><div class="v num" id="cmp-stat-${i}">--</div></div>`).join("");
   stats.forEach(([, v], i) => countTo($(`cmp-stat-${i}`), v ?? 0, (x) => Math.round(x ?? 0).toLocaleString()));
-  $("cmp-tag").textContent = `${topicCount("cultural").toLocaleString()} cultural · ${topicCount("economic").toLocaleString()} economic · ${topicCount("geopolitical").toLocaleString()} geopolitical markets · scanned ${ago(c.generated_at)}`;
+  $("cmp-tag").innerHTML = esc(`${topicCount("cultural").toLocaleString()} cultural · ${topicCount("economic").toLocaleString()} economic · ${topicCount("geopolitical").toLocaleString()} geopolitical markets · scanned ${ago(c.generated_at)}`) + liveTag();
 
   const f = cmpState.filter;
   const match = { all: () => true, related: (r) => r.relations.length > 0, cross: (r) => r.a.venue !== r.b.venue };
-  const rows = (c.rows || []).filter(match[f] || ((r) => r.status === f));
+  const rows = (c.rows || []).map(current).filter(match[f] || ((r) => r.status === f));
   const shownRows = rows.slice(0, cmpState.limit);
   el.innerHTML = shownRows.length
     ? table(
         [["Status"], ["Market A"], ["Relation"], ["Market B"], ["Same thing", "num"], ["Price check", "num"], ["Judged", "num"]],
-        shownRows.map((r) => `<tr>
-          <td>${STATUS_TAG[r.status] || esc(r.status)}</td>
+        shownRows.map((r) => `<tr data-pair="${esc(pairId(r))}">
+          <td class="st">${STATUS_TAG[r.status] || esc(r.status)}</td>
           ${marketCell(r.a)}
           <td class="rel">${esc(relationLabel(r))}<span class="p">${r.relations.length ? "" : "closest: " + esc(REL_LABEL[r.best.relation] || r.best.relation) + " "}${esc(pct(r.best.prob, 0))}</span></td>
           ${marketCell(r.b)}
           <td class="num">${esc(pct(r.gate, 0))}</td>
-          <td class="num ${r.status === "violation" ? "pos" : ""}" title="best set's guaranteed profit at current prices; negative = how far from a violation">${r.edge === null || r.edge === undefined ? "—" : esc(usd(r.edge)) + "/set"}${r.status === "unpriced" && r.note ? `<span class="why">${esc(r.note)}</span>` : ""}</td>
+          <td class="num pc ${priceClass(r)}" title="best set's guaranteed profit at current prices; negative = how far from a violation">${priceCell(r)}</td>
           <td class="num">${esc(ago(r.asked_at))}</td></tr>`),
       )
     : emptyNote();
@@ -403,6 +546,43 @@ function renderStatus(d) {
   $("loop-status-text").textContent = !h.last_line_at ? "no loop" : live ? "live" : "stale";
 }
 
+// ---- live prices: patch the visible rows in place (no re-render, so row
+// animations don't replay every 3 s) --------------------------------------------------
+function applyLive() {
+  if (!lastData) return;
+  const rows = ((lastData.relations || {}).comparisons || {}).rows || [];
+  const byId = new Map(rows.map((r) => [pairId(r), r]));
+  document.querySelectorAll("#cmp-table tr[data-pair]").forEach((tr) => {
+    const base = byId.get(tr.dataset.pair);
+    if (!base) return;
+    const r = current(base);
+    const pc = tr.querySelector(".pc");
+    const html = priceCell(r);
+    if (pc.innerHTML !== html) {
+      pc.innerHTML = html;
+      pc.classList.toggle("pos", priceClass(r) === "pos");
+      pc.classList.toggle("neg", priceClass(r) === "neg");
+      if (!reduce) animate(pc, { opacity: [0.35, 1], duration: 500 });
+    }
+    tr.querySelector(".st").innerHTML = STATUS_TAG[r.status] || esc(r.status);
+  });
+  const tag = $("cmp-tag");
+  tag.innerHTML = tag.innerHTML.replace(/ · <span class="live-dot".*$/, "") + liveTag();
+}
+
+async function refreshLive() {
+  if (document.hidden) return; // no polling from a background tab
+  try {
+    const res = await fetch("/api/live", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const d = await res.json();
+    live = { running: !!d.running, byPair: new Map((d.rows || []).map((r) => [r.id, r])), at: d.generated_at };
+  } catch {
+    live = { ...live, running: false };
+  }
+  applyLive();
+}
+
 // ---- refresh loop -------------------------------------------------------------------
 async function refresh() {
   try {
@@ -418,16 +598,15 @@ async function refresh() {
     renderPositions(d);
     renderStatus(d);
     renderCharts(d, { animateLines: first });
-    $("footer-updated").textContent = `DATA ${new Date(d.generated_at).toISOString().slice(0, 19).replace("T", " ")} UTC · REFRESH 60S`;
   } catch (err) {
     $("loop-status-text").textContent = "offline";
     $("loop-status").classList.add("stale");
-    $("footer-updated").textContent = `REFRESH FAILED (${err.message}) · RETRYING`;
   } finally {
     revealOnce();
   }
 }
 
 applyTheme(currentTheme(), false);
-refresh();
+refresh().then(refreshLive);
 setInterval(refresh, REFRESH_MS);
+setInterval(refreshLive, LIVE_MS);

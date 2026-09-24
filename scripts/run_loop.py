@@ -26,7 +26,9 @@ when opted back in with --ladder-paper / --sports-paper.
    that violate the relation; every leg is paper-bought or none is. Runs
    every cycle by default (--relations-every): Kalshi/Polymarket data is
    free, Jev is cheap, and verdicts are cached, so later cycles mostly
-   just re-price known relations.
+   just re-price known relations. Between cycles, run_relation_watcher.py
+   (its own service, kalshi-watcher) re-prices the confirmed relations
+   every few seconds from the watchlist each scan writes.
 
 score_paper_fills.py runs every cycle: settles/marks every position and
 appends a point to data/paper_equity.jsonl, the dashboard's equity curve.

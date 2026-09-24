@@ -33,16 +33,6 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #121110; --bg-sunk: #0C0B0A; --rule: #2A2825; --rule-strong: #45423E;
-    --ink: #EDEAE4; --ink-2: rgba(237, 234, 228, 0.66); --ink-3: rgba(237, 234, 228, 0.42);
-    --accent: #7568FF; --accent-ink: #0C0B0A; --series-1: #7568FF; --series-2: #E3682E;
-    --good: #43B97C; --bad: #F06A5C; --seg-off: rgba(237, 234, 228, 0.08);
-    --dot: rgba(237, 234, 228, 0.5); --fiber: #EDEAE4; --grid-line: rgba(237, 234, 228, 0.08);
-    color-scheme: dark;
-  }
-}
 :root[data-theme="dark"] {
   --bg: #121110; --bg-sunk: #0C0B0A; --rule: #2A2825; --rule-strong: #45423E;
   --ink: #EDEAE4; --ink-2: rgba(237, 234, 228, 0.66); --ink-3: rgba(237, 234, 228, 0.42);
@@ -84,12 +74,6 @@ a { color: inherit; }
 .brand-mark { display: grid; grid-template-columns: repeat(3, 5px); gap: 1px; }
 .brand-mark i { width: 5px; height: 5px; background: var(--ink); }
 .brand-mark i.off { background: transparent; }
-.nav { display: flex; gap: 2px; margin-left: 12px; }
-.nav a {
-  font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--ink-2); text-decoration: none; padding: 6px 10px; border: 1px solid transparent;
-}
-.nav a:hover { color: var(--ink); border-color: var(--rule); }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 14px; }
 .status { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-2); }
 .status .dot { width: 7px; height: 7px; background: var(--good); }
@@ -115,6 +99,7 @@ a { color: inherit; }
 .hero-dots { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .hero-copy { position: relative; z-index: 1; padding: 40px 40px 32px; display: flex; flex-direction: column; }
 .hero h1 { font-weight: 300; font-size: clamp(34px, 4.4vw, 52px); letter-spacing: -0.02em; line-height: 1.02; margin: 0 0 18px; }
+.nowrap { white-space: nowrap; }
 .hero-desc { max-width: 440px; margin: 0 0 30px; font-size: 15px; line-height: 1.5; color: var(--ink-2); }
 .hero h1 em { font-style: normal; color: var(--accent); }
 .lcd-wrap { display: flex; align-items: flex-end; gap: 14px; }
@@ -214,14 +199,14 @@ td.mkt .m { margin-top: 3px; font-size: 10.5px; letter-spacing: 0.06em; text-tra
 td.rel { white-space: nowrap; }
 td.rel .p { display: block; font-size: 11px; color: var(--ink-3); margin-top: 2px; }
 .tag.muted { color: var(--ink-3); border-color: var(--rule); }
-.key { margin: 14px 0 0; max-width: 820px; font-size: 12.5px; line-height: 1.55; color: var(--ink-2); }
-.key b { color: var(--ink); font-weight: 500; }
+.live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--good); margin-right: 5px; vertical-align: 1px; }
 td .why { display: block; margin-top: 2px; font-size: 10.5px; color: var(--ink-3); white-space: normal; max-width: 180px; margin-left: auto; }
 .more {
   display: block; margin: 14px auto 0; font-family: var(--sans); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
   background: transparent; color: var(--ink-2); border: 1px solid var(--rule-strong); padding: 8px 16px; cursor: pointer;
 }
 .more:hover { color: var(--ink); border-color: var(--ink); }
+.more[hidden] { display: none; }
 
 pre.log {
   margin: 12px 0 0; max-height: 300px; overflow: auto; padding: 14px 16px;
@@ -237,13 +222,25 @@ footer {
 }
 
 /* Reveal-on-load targets start hidden only when motion is allowed and JS runs. */
-.js-motion [data-reveal] { opacity: 0; }
+/* First-load draw-in (app.js drawIn): until a group is drawn, its rules are
+   hidden and its contents transparent; SVG strokes trace the rules, then the
+   real ones take over (.drawn) at the same pixels. */
+.js-motion [data-reveal]:not(.drawn) { border-color: transparent; }
+.js-motion .ledger[data-reveal]:not(.drawn),
+.js-motion [data-reveal]:not(.drawn) .stats-row { background: transparent; }
+.js-motion [data-reveal]:not(.drawn) .hero-visual { border-color: transparent; }
+.js-motion .section-head[data-reveal]:not(.drawn) > *,
+.js-motion .hero[data-reveal]:not(.drawn) > *,
+.js-motion [data-reveal]:not(.drawn) .cell > *,
+.js-motion [data-reveal]:not(.drawn) .stats-row > * > * { opacity: 0; }
+.draw-svg { position: absolute; overflow: visible; pointer-events: none; z-index: 10; }
+.draw-svg path { fill: none; stroke: var(--rule); stroke-width: 1; shape-rendering: crispEdges; }
+.draw-svg path.ink { stroke: var(--ink); }
 
 @media (max-width: 960px) {
   .hero { grid-template-columns: 1fr; }
   .hero-visual { min-height: 320px; border-left: 0; border-top: 1px solid var(--rule); }
   .two, .halves, .thirds { grid-template-columns: 1fr; }
-  .nav { display: none; }
   .section-head { flex-wrap: wrap; }
   .section-head p { margin-left: 0; text-align: left; }
 }

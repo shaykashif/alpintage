@@ -188,11 +188,25 @@ def paper_trading_summary(recent_n: int = 100) -> dict:
     }
 
 
+def _dedupe_arbs(arbs: list[dict]) -> list[dict]:
+    """The scanner and the 3-second watcher can both log the same violation
+    (same legs, same prices). Count and show it once: the traded copy if
+    either traded, else the latest."""
+    out: dict[tuple, dict] = {}
+    for a in arbs:
+        key = (a.get("kind"), tuple((l.get("ticker"), l.get("side"), l.get("price")) for l in a.get("legs", [])))
+        prev = out.get(key)
+        if prev is None or (a.get("traded") and not prev.get("traded")) or \
+                (a.get("traded") == prev.get("traded") and (a.get("logged_at") or "") > (prev.get("logged_at") or "")):
+            out[key] = a
+    return list(out.values())
+
+
 def relation_summary(recent_n: int = 25) -> dict:
     """What the relationship-arb scanner has found: Jev-judged pairs (the
     verdict cache) and priced opportunities (tradeable or not)."""
     verdicts = _load_jsonl(DATA_DIR / "relations_cache.jsonl")
-    arbs = _load_jsonl(DATA_DIR / "relation_arbs.jsonl")
+    arbs = _dedupe_arbs(_load_jsonl(DATA_DIR / "relation_arbs.jsonl"))
     # Latest scan's judged pairs (violations or not), written by
     # run_relation_scanner.py -- already bounded in size there.
     comparisons = None
@@ -226,6 +240,27 @@ def relation_summary(recent_n: int = 25) -> dict:
             for a in sorted(arbs, key=lambda a: a.get("logged_at") or "", reverse=True)[:recent_n]
         ],
     }
+
+
+LIVE_STALE_S = 30  # the watcher writes every ~3 s; older than this, it isn't running
+
+
+def relation_live() -> dict:
+    """The watcher's latest price check of every confirmed relation (see
+    scripts/run_relation_watcher.py). `running` is False when the file is
+    missing or stale, so the page never shows old prices as live."""
+    path = DATA_DIR / "relation_live.json"
+    try:
+        live = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"running": False, "rows": []}
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(live["generated_at"])).total_seconds()
+    except (KeyError, ValueError):
+        age = None
+    live["age_s"] = age
+    live["running"] = age is not None and age <= LIVE_STALE_S
+    return live
 
 
 def loop_health() -> dict:

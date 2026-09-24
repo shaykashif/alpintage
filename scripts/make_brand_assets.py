@@ -101,7 +101,7 @@ def og_image(font_path: str | None) -> Image.Image:
     d.text((146, 84), "Pternas", font=load_font(font_path, 40), fill=INK)
 
     headline = load_font(font_path, 78)
-    d.text((80, 250), "There's no points for", font=headline, fill=INK)
+    d.text((80, 250), "There are no points for", font=headline, fill=INK)
     d.text((80, 340), "second best.", font=headline, fill=ACCENT)
     d.text((84, 480), "Arbitrage across thousands of cultural and economic events.",
            font=load_font(font_path, 28), fill=(96, 92, 86))

@@ -49,6 +49,12 @@ from .fees import taker_fee
 # these err strict; re-calibrate as data/relations_cache.jsonl grows.
 RELATION_THRESHOLD = 0.80
 GATE_THRESHOLD = 0.90
+# Lower gate for pure implications (A => B, B => A, or both), by the
+# project owner's choice (2026-09-24). Still far above the false pairs'
+# 0.03-0.04 in the calibration set, and admits true ones that scored
+# 0.88-0.89. "Not both" / "at least one" keep GATE_THRESHOLD.
+IMPLICATION_GATE_THRESHOLD = 0.80
+IMPLICATIONS = frozenset({"a_implies_b", "b_implies_a"})
 
 # Minimum guaranteed profit per $1 set, net of fees, worth taking.
 MIN_EDGE = 0.005
@@ -71,11 +77,30 @@ _COMMON = (
     "a way that breaks it, answer NO. Ignore prices."
 )
 
+# Bump when a relation question changes in a way that could flip an
+# ACCEPTED verdict: cached verdicts from an older version that currently
+# pass one of STRICTER_IN_CURRENT are re-asked (run_relation_scanner.py).
+# v2 (2026-09-24): ranked-list guidance for "not both" / "at least one".
+# Seen live: Jev called "Moonshot is the THIRD-best Chinese AI company"
+# and "Zhipu is the SECOND-best" mutually exclusive -- both can be YES.
+PROMPT_VERSION = 2
+STRICTER_IN_CURRENT = frozenset({"mutually_exclusive", "exhaustive"})
+
+_RANKED_LISTS = (
+    " Ranked lists and positions: when both markets concern a ranking, chart, "
+    "leaderboard or finishing order, first identify which POSITION each market "
+    "asks about (e.g. #1, second-best, third place, top 3). Different entities "
+    "in DIFFERENT positions can all be true at once (X second and Y third on "
+    "the same list), so for different single positions the answer is NO. Only "
+    "the SAME single position (X is #1 vs Y is #1) makes two different "
+    "entities exclusive, and a 'top N' range overlaps any position inside it."
+)
+
 RELATION_QUESTIONS = {
     "a_implies_b": "Is it logically guaranteed that if market A resolves YES, market B also resolves YES?" + _COMMON,
     "b_implies_a": "Is it logically guaranteed that if market B resolves YES, market A also resolves YES?" + _COMMON,
-    "mutually_exclusive": "Is it logically guaranteed that markets A and B can NOT both resolve YES?" + _COMMON,
-    "exhaustive": "Is it logically guaranteed that at least one of markets A and B resolves YES?" + _COMMON,
+    "mutually_exclusive": "Is it logically guaranteed that markets A and B can NOT both resolve YES?" + _RANKED_LISTS + _COMMON,
+    "exhaustive": "Is it logically guaranteed that at least one of markets A and B resolves YES?" + _RANKED_LISTS + _COMMON,
     # Gate. Seen live: Jev gave 0.87 to "7Y yield above X at month end
     # implies 10Y monthly high above X" -- a different bond, so false -- the
     # same score it gave true same-tenor implications. Asking directly
@@ -212,14 +237,17 @@ def relation_state(a: Contract, b: Contract, today: str | None = None) -> str:
 
 
 def classify(probs: dict[str, float], threshold: float = RELATION_THRESHOLD,
-             gate_threshold: float = GATE_THRESHOLD) -> tuple[list[str], str | None]:
+             gate_threshold: float = GATE_THRESHOLD,
+             implication_gate_threshold: float = IMPLICATION_GATE_THRESHOLD) -> tuple[list[str], str | None]:
     """Relations Jev is confident in, or ([], why not). Requires the
-    same-underlying gate to clear the same bar, and rejects relation sets
+    same-underlying gate to clear its bar (the lower implication bar when
+    every confident relation is an implication), and rejects relation sets
     that contradict each other."""
     confident = frozenset(r for r in RELATIONS if probs.get(r, 0.0) >= threshold)
     if not confident:
         return [], None
-    if probs.get("same_underlying", 0.0) < gate_threshold:
+    gate = implication_gate_threshold if confident <= IMPLICATIONS else gate_threshold
+    if probs.get("same_underlying", 0.0) < gate:
         return [], f"same_underlying {probs.get('same_underlying', 0.0):.2f} below threshold"
     if confident not in _CONSISTENT:
         return [], f"inconsistent relation set {sorted(confident)}"

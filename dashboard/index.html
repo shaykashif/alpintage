@@ -7,8 +7,7 @@
 <meta name="description" content="Prediction market relationship arbitrage: a frontier classification model finds logically linked Kalshi and Polymarket markets, then paper-trades mispricings.">
 <link rel="canonical" href="https://pternas.com/">
 <meta name="robots" content="index, follow, max-image-preview:large">
-<meta name="theme-color" media="(prefers-color-scheme: light)" content="#F7F6F5">
-<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#121110">
+<meta name="theme-color" content="#F7F6F5">
 
 <!-- Favicons: SVG follows the browser theme; ICO/PNG for older browsers and iOS. -->
 <link rel="icon" href="/assets/brand/favicon.svg" type="image/svg+xml">
@@ -20,14 +19,14 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Pternas">
 <meta property="og:url" content="https://pternas.com/">
-<meta property="og:title" content="Pternas &middot; There's no points for second best.">
+<meta property="og:title" content="Pternas &middot; There are no points for second best.">
 <meta property="og:description" content="Prediction market relationship arbitrage: a frontier classification model finds logically linked Kalshi and Polymarket markets, then paper-trades mispricings.">
 <meta property="og:image" content="https://pternas.com/assets/brand/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Pternas: There's no points for second best.">
+<meta property="og:image:alt" content="Pternas: There are no points for second best.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Pternas &middot; There's no points for second best.">
+<meta name="twitter:title" content="Pternas &middot; There are no points for second best.">
 <meta name="twitter:description" content="Prediction market relationship arbitrage: a frontier classification model finds logically linked Kalshi and Polymarket markets, then paper-trades mispricings.">
 <meta name="twitter:image" content="https://pternas.com/assets/brand/og-image.png">
 
@@ -48,11 +47,13 @@
 }
 </script>
 <script>
-  // Before first paint: saved theme choice (else OS preference applies via
-  // CSS), and hide reveal targets only if motion is allowed -- with a
+  // Before first paint: the visitor's saved theme choice, else light (the
+  // default regardless of OS setting, by the owner's choice), and hide reveal targets only if motion is allowed -- with a
   // fallback that un-hides them if the animation module never loads.
   (function () {
-    try { var t = localStorage.getItem("pternas-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+    var t = "light";
+    try { var saved = localStorage.getItem("pternas-theme"); if (saved === "dark") t = saved; } catch (e) {}
+    document.documentElement.dataset.theme = t;
     if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       document.documentElement.classList.add("js-motion");
       setTimeout(function () { if (!window.__revealed) document.documentElement.classList.remove("js-motion"); }, 2500);
@@ -62,7 +63,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/app.css?v=8">
+<link rel="stylesheet" href="/assets/app.css?v=14">
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -74,9 +75,6 @@
       <span class="brand-mark" aria-hidden="true"><i class="off"></i><i class="off"></i><i></i><i class="off"></i><i></i><i class="off"></i><i></i><i class="off"></i><i></i></span>
       Pternas
     </a>
-    <nav class="nav" aria-label="Sections">
-      <a href="#book">Book</a><a href="#relations">Relations</a><a href="#comparisons">Comparisons</a><a href="#positions">Positions</a>
-    </nav>
     <div class="topbar-right">
       <span class="status" id="loop-status"><span class="dot" aria-hidden="true"></span><span id="loop-status-text">--</span></span>
       <span class="clock" id="clock" aria-hidden="true">--:--:-- UTC</span>
@@ -87,17 +85,17 @@
     <section class="hero" data-reveal aria-labelledby="hero-title">
       <canvas class="hero-dots" id="dots" aria-hidden="true"></canvas>
       <div class="hero-copy">
-        <h1 id="hero-title">There's no points for<br><em>second best.</em></h1>
+        <h1 id="hero-title">There are no <span class="nowrap">points for</span><br><em>second best.</em></h1>
         <p class="hero-desc">Pternas is an arbitrage engine that uses frontier classification models to cross compare thousands of cultural and economic events in real time, finding discrepancies and violations with unmatched speed.</p>
         <div class="lcd-wrap">
           <span class="lcd-sign num" id="pnl-sign">+</span>
           <span class="lcd" id="pnl-lcd" role="img" aria-label="total PnL"></span>
-          <span class="lcd-unit">TOTAL PNL</span>
+          <span class="lcd-unit" id="lcd-unit">TOTAL PNL</span>
         </div>
         <div class="hero-stats">
-          <div class="kv"><div class="k">Realized</div><div class="v" id="h-realized">--</div></div>
-          <div class="kv"><div class="k">Unrealized</div><div class="v" id="h-unrealized">--</div></div>
-          <div class="kv"><div class="k">Capital at risk</div><div class="v" id="h-capital">--</div></div>
+          <div class="kv"><div class="k" id="h-k0">Realized</div><div class="v" id="h-realized">--</div></div>
+          <div class="kv"><div class="k" id="h-k1">Unrealized</div><div class="v" id="h-unrealized">--</div></div>
+          <div class="kv"><div class="k" id="h-k2">Capital at risk</div><div class="v" id="h-capital">--</div></div>
         </div>
         <div class="hero-foot" id="hero-foot"></div>
       </div>
@@ -106,9 +104,20 @@
       </div>
     </section>
 
+
+    <section class="section" id="relations" aria-labelledby="rel-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">01</span><h2 id="rel-h">Relationship arbitrage</h2>
+      </div>
+      <div class="ledger" data-reveal>
+        <div class="stats-row" id="rel-stats"></div>
+        <div class="cell"><div class="table-wrap" id="rel-table"></div></div>
+      </div>
+    </section>
+
     <section class="section" id="book" aria-labelledby="book-h">
       <div class="section-head" data-reveal>
-        <span class="section-index">01</span><h2 id="book-h">Equity curve</h2>
+        <span class="section-index">02</span><h2 id="book-h">Equity curve</h2>
       </div>
       <div class="ledger two" data-reveal>
         <div class="cell">
@@ -122,16 +131,6 @@
           <div class="cell-head"><span class="cell-title">Book</span></div>
           <div class="table-wrap"><table><tbody id="book-table"></tbody></table></div>
         </div>
-      </div>
-    </section>
-
-    <section class="section" id="relations" aria-labelledby="rel-h">
-      <div class="section-head" data-reveal>
-        <span class="section-index">02</span><h2 id="rel-h">Relationship arbitrage</h2>
-      </div>
-      <div class="ledger" data-reveal>
-        <div class="stats-row" id="rel-stats"></div>
-        <div class="cell"><div class="table-wrap" id="rel-table"></div></div>
       </div>
     </section>
 
@@ -153,7 +152,6 @@
             </div>
             <span class="cell-tag" id="cmp-tag"></span>
           </div>
-          <p class="key">Each row compares two markets, <b>A</b> and <b>B</b>. <b>If A, then B</b>: whenever A resolves YES, B must too, so B should never be cheaper than A. <b>Not both</b>: they can't both resolve YES, so their prices shouldn't add up past $1. <b>Same outcome</b>: they always resolve the same way, so they should cost the same.</p>
           <div class="table-wrap" id="cmp-table"></div>
           <button type="button" class="more" id="cmp-more" hidden>Show more</button>
         </div>
@@ -200,8 +198,7 @@
   </main>
 
   <footer>
-    <span>PTERNAS &middot; PAPER TRADING ONLY &middot; NO REAL ORDERS ARE EVER PLACED</span>
-    <span id="footer-updated">--</span>
+    <span>PTERNAS</span>
     <div class="toggle" role="group" aria-label="Color theme">
       <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
       <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>
@@ -209,6 +206,6 @@
   </footer>
 </div>
 
-<script type="module" src="/assets/app.js?v=8"></script>
+<script type="module" src="/assets/app.js?v=15"></script>
 </body>
 </html>
