@@ -444,6 +444,8 @@ function current(r) {
   const l = r.relations.length && live.running ? live.byPair.get(pairId(r)) : null;
   return l ? { ...r, status: l.status, edge: l.edge, note: l.note, live: true } : r;
 }
+/** Green for a violation (profit), red for a negative edge (how far from one). */
+const priceClass = (r) => (r.status === "violation" ? "pos" : typeof r.edge === "number" && r.edge < 0 ? "neg" : "");
 function priceCell(r) {
   const val = r.edge === null || r.edge === undefined ? "—" : esc(usd(r.edge)) + "/set";
   const why = r.status === "unpriced" && r.note ? `<span class="why">${esc(r.note)}</span>` : "";
@@ -491,7 +493,7 @@ function renderComparisons(d) {
           <td class="rel">${esc(relationLabel(r))}<span class="p">${r.relations.length ? "" : "closest: " + esc(REL_LABEL[r.best.relation] || r.best.relation) + " "}${esc(pct(r.best.prob, 0))}</span></td>
           ${marketCell(r.b)}
           <td class="num">${esc(pct(r.gate, 0))}</td>
-          <td class="num pc ${r.status === "violation" ? "pos" : ""}" title="best set's guaranteed profit at current prices; negative = how far from a violation">${priceCell(r)}</td>
+          <td class="num pc ${priceClass(r)}" title="best set's guaranteed profit at current prices; negative = how far from a violation">${priceCell(r)}</td>
           <td class="num">${esc(ago(r.asked_at))}</td></tr>`),
       )
     : emptyNote();
@@ -563,7 +565,8 @@ function applyLive() {
     const html = priceCell(r);
     if (pc.innerHTML !== html) {
       pc.innerHTML = html;
-      pc.classList.toggle("pos", r.status === "violation");
+      pc.classList.toggle("pos", priceClass(r) === "pos");
+      pc.classList.toggle("neg", priceClass(r) === "neg");
       if (!reduce) animate(pc, { opacity: [0.35, 1], duration: 500 });
     }
     tr.querySelector(".st").innerHTML = STATUS_TAG[r.status] || esc(r.status);
