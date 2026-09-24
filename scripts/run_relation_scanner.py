@@ -242,9 +242,6 @@ def main() -> None:
         if not verdict or verdict.get("route") != "typesafe":
             continue
         rels, why_not = verdict_relations(verdict, args.threshold, args.gate_threshold, args.implication_gate_threshold)
-        veto = relations.structural_veto(rels, a, b)
-        if veto:
-            rels, why_not = [], veto
         if why_not and why_not.startswith("inconsistent"):
             inconsistent += 1
         row, arbs = comparison_row(a, b, verdict, rels, why_not)
