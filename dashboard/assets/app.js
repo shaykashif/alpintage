@@ -598,11 +598,9 @@ async function refresh() {
     renderPositions(d);
     renderStatus(d);
     renderCharts(d, { animateLines: first });
-    $("footer-updated").textContent = `DATA ${new Date(d.generated_at).toISOString().slice(0, 19).replace("T", " ")} UTC · REFRESH 60S`;
   } catch (err) {
     $("loop-status-text").textContent = "offline";
     $("loop-status").classList.add("stale");
-    $("footer-updated").textContent = `REFRESH FAILED (${err.message}) · RETRYING`;
   } finally {
     revealOnce();
   }
