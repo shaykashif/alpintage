@@ -144,6 +144,7 @@ a { color: inherit; }
 
 /* ---- sections ------------------------------------------------------------ */
 .section { margin-top: 56px; scroll-margin-top: 72px; }
+main > .section:first-child { margin-top: 28px; }
 .section-head { display: flex; align-items: baseline; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--ink); }
 .section-index { font-family: var(--mono); font-size: 11px; color: var(--ink-3); letter-spacing: 0.06em; }
 .section-head h2 { font-weight: 400; font-size: 24px; letter-spacing: -0.015em; margin: 0; }

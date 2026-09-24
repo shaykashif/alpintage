@@ -265,7 +265,7 @@ function setHeroMode(mode) {
   ["lcd", "h-realized", "h-unrealized", "h-capital"].forEach((k) => shown.delete(k)); // don't tween across units
   // Section order: comparisons first while there's no book to show.
   const main = $("top"), cmp = $("comparisons");
-  if (mode === "comparisons") main.insertBefore(cmp, $("book"));
+  if (mode === "comparisons") main.insertBefore(cmp, $("book")); // right under the hero
   else main.insertBefore(cmp, $("positions"));
   main.querySelectorAll(":scope > .section .section-index").forEach((el, i) => (el.textContent = String(i + 1).padStart(2, "0")));
 }

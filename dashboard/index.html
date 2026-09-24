@@ -57,7 +57,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/app.css?v=9">
+<link rel="stylesheet" href="/assets/app.css?v=10">
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -76,6 +76,16 @@
   </header>
 
   <main id="top">
+    <section class="section" id="relations" aria-labelledby="rel-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">01</span><h2 id="rel-h">Relationship arbitrage</h2>
+      </div>
+      <div class="ledger" data-reveal>
+        <div class="stats-row" id="rel-stats"></div>
+        <div class="cell"><div class="table-wrap" id="rel-table"></div></div>
+      </div>
+    </section>
+
     <section class="hero" data-reveal aria-labelledby="hero-title">
       <canvas class="hero-dots" id="dots" aria-hidden="true"></canvas>
       <div class="hero-copy">
@@ -98,9 +108,10 @@
       </div>
     </section>
 
+
     <section class="section" id="book" aria-labelledby="book-h">
       <div class="section-head" data-reveal>
-        <span class="section-index">01</span><h2 id="book-h">Equity curve</h2>
+        <span class="section-index">02</span><h2 id="book-h">Equity curve</h2>
       </div>
       <div class="ledger two" data-reveal>
         <div class="cell">
@@ -114,16 +125,6 @@
           <div class="cell-head"><span class="cell-title">Book</span></div>
           <div class="table-wrap"><table><tbody id="book-table"></tbody></table></div>
         </div>
-      </div>
-    </section>
-
-    <section class="section" id="relations" aria-labelledby="rel-h">
-      <div class="section-head" data-reveal>
-        <span class="section-index">02</span><h2 id="rel-h">Relationship arbitrage</h2>
-      </div>
-      <div class="ledger" data-reveal>
-        <div class="stats-row" id="rel-stats"></div>
-        <div class="cell"><div class="table-wrap" id="rel-table"></div></div>
       </div>
     </section>
 
@@ -172,6 +173,6 @@
   </footer>
 </div>
 
-<script type="module" src="/assets/app.js?v=12"></script>
+<script type="module" src="/assets/app.js?v=13"></script>
 </body>
 </html>
