@@ -182,6 +182,14 @@ def main() -> None:
                     backoff = min(backoff * 2, BACKOFF_MAX_S)
                 else:
                     backoff = args.interval_s
+            else:
+                # Still write a heartbeat, so "nothing to watch yet" is
+                # distinguishable from "watcher not running".
+                write_json_atomic(LIVE_PATH, {
+                    "generated_at": datetime.now(timezone.utc).isoformat(), "pairs": 0, "markets": 0, "quoted": 0,
+                    "fetch_ms": 0, "errors": [], "counts": {}, "rows": [],
+                    "waiting": "no watchlist yet" if watch_mtime is None else "watchlist has no confirmed relations",
+                })
             if args.ticks and n >= args.ticks:
                 break
             time.sleep(max(0.0, backoff - (time.monotonic() - started)))
