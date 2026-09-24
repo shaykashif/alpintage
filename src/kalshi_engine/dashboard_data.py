@@ -146,6 +146,7 @@ def paper_trading_summary(recent_n: int = 30) -> dict:
             "realized_pnl": r.get("realized_pnl"),
             "open_cost": r.get("open_cost"),
             "stat_arb_pnl": (r.get("by_strategy") or {}).get(ledger.STAT_ARB_STRATEGY),
+            "relation_arb_pnl": (r.get("by_strategy") or {}).get("relation_arb"),
         }
         for r in _load_jsonl(DATA_DIR / "paper_equity.jsonl")
     ]
@@ -173,6 +174,36 @@ def paper_trading_summary(recent_n: int = 30) -> dict:
                 "ts": t.get("ts"),
             }
             for t in trades
+        ],
+    }
+
+
+def relation_summary(recent_n: int = 25) -> dict:
+    """What the relationship-arb scanner has found: Jev-judged pairs (the
+    verdict cache) and priced opportunities (tradeable or not)."""
+    verdicts = _load_jsonl(DATA_DIR / "relations_cache.jsonl")
+    arbs = _load_jsonl(DATA_DIR / "relation_arbs.jsonl")
+    by_kind: dict[str, int] = {}
+    for a in arbs:
+        by_kind[a.get("kind", "?")] = by_kind.get(a.get("kind", "?"), 0) + 1
+    return {
+        "pairs_judged": len(verdicts),
+        "opportunities_logged": len(arbs),
+        "tradeable_logged": sum(1 for a in arbs if a.get("tradeable")),
+        "traded": sum(1 for a in arbs if a.get("traded")),
+        "by_kind": by_kind,
+        "recent": [
+            {
+                "kind": a.get("kind"),
+                "legs": [f"{l['side'].upper()} {l['ticker']} @{l['price']:.2f}" for l in a.get("legs", [])],
+                "edge_per_set": a.get("edge_per_set"),
+                "qty": a.get("qty"),
+                "tradeable": a.get("tradeable"),
+                "traded": a.get("traded"),
+                "note": a.get("trade_note") or a.get("reason"),
+                "logged_at": a.get("logged_at"),
+            }
+            for a in sorted(arbs, key=lambda a: a.get("logged_at") or "", reverse=True)[:recent_n]
         ],
     }
 
@@ -214,5 +245,6 @@ def full_summary() -> dict:
         "predictions": predictions_summary(),
         "cross_venue": cross_venue_summary(),
         "paper_trading": paper_trading_summary(),
+        "relations": relation_summary(),
         "loop_health": loop_health(),
     }

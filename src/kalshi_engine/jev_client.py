@@ -68,6 +68,37 @@ def _ask_noul_mock(state: str, instructions: str) -> NoulResult:
     )
 
 
+@dataclass
+class NoulMultiResult:
+    probs: dict[str, float]  # question name -> P(yes)
+    route: str  # "typesafe" or "mock"
+    model: str
+
+
+def ask_noul_multi(state: str, questions: dict[str, str], timeout: float = 30.0) -> NoulMultiResult:
+    """Several Noul yes/no judgments about the same `state` in ONE call
+    (the API takes a dict of named questions -- verified live 2026-09-24).
+    With no key, every answer is 0.0 and route="mock": a mock must never
+    look like a confident judgment to a caller that trades on it."""
+    api_key = os.environ.get("TYPESAFE_API_KEY")
+    if not api_key:
+        return NoulMultiResult(probs={name: 0.0 for name in questions}, route="mock", model="mock-jev")
+    body = {
+        "state": state,
+        "model": "jev-latest",
+        "questions": {name: {"type": "noul", "instructions": text} for name, text in questions.items()},
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    r = httpx.post(TYPESAFE_URL, json=body, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    return NoulMultiResult(
+        probs={name: float(data["answers"][name]["noul"]) for name in questions},
+        route="typesafe",
+        model=data.get("model", "jev-latest"),
+    )
+
+
 def ask_noul(state: str, instructions: str, timeout: float = 15.0) -> NoulResult:
     """Ask Jev's Noul primitive a yes/no judgment about `state`. Uses
     TYPESAFE_API_KEY from the environment if set, otherwise the mock."""

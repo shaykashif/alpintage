@@ -1,4 +1,4 @@
-"""Run two paper-trading models on a repeating interval, for multi-day
+"""Run three paper-trading models on a repeating interval, for multi-day
 unattended operation. Nothing here sends a real order.
 
 1. run_scanner.py --paper: true arbitrage within Kalshi (ladder/bracket
@@ -13,6 +13,14 @@ unattended operation. Nothing here sends a real order.
    for the honest caveat on what that does and doesn't prove. Runs
    periodically (--cross-venue-every), not every cycle, since it costs
    real Odds API quota -- so exits are also only checked that often.
+3. run_relation_scanner.py --paper: relationship arbitrage on short-dated
+   cultural/economic/political event markets (Kalshi + Polymarket). Jev
+   classifies how pairs of markets are logically related (A implies B,
+   mutually exclusive, ...) from their full rules; arithmetic finds prices
+   that violate the relation; every leg is paper-bought or none is. Runs
+   every cycle by default (--relations-every): Kalshi/Polymarket data is
+   free, Jev is cheap, and verdicts are cached, so later cycles mostly
+   just re-price known relations.
 
 score_paper_fills.py runs every cycle: settles/marks every position and
 appends a point to data/paper_equity.jsonl, the dashboard's equity curve.
@@ -83,6 +91,8 @@ def main() -> None:
     ap.add_argument("--cross-venue-every", type=int, default=6, help="run the cross-venue model every N cycles (0 = never)")
     ap.add_argument("--cross-venue-leagues", default="nfl", help="comma-separated league keys, or 'all' (costs more Odds API quota)")
     ap.add_argument("--require-trust", action="store_true", help="pass through to run_cross_venue_scanner.py's stricter, evidence-gated mode")
+    ap.add_argument("--relations-every", type=int, default=1, help="run the relationship-arb scanner every N cycles (0 = never)")
+    ap.add_argument("--relations-horizon-days", type=float, default=7.0, help="only event markets settling within this many days")
     args = ap.parse_args()
 
     python = sys.executable
@@ -93,7 +103,10 @@ def main() -> None:
             cycle += 1
             print(f"\n=== cycle {cycle} ===")
             _run([python, "scripts/run_scanner.py", "--max-pages", str(args.scan_pages), "--paper"])
-            _run([python, "scripts/score_paper_fills.py"])
+            if args.relations_every and (cycle == 1 or cycle % args.relations_every == 0):
+                # Fetching ~12k event markets + Jev on new pairs: minutes, not seconds.
+                _run([python, "scripts/run_relation_scanner.py", "--horizon-days", str(args.relations_horizon_days), "--paper"], timeout=1200)
+            _run([python, "scripts/score_paper_fills.py"], timeout=300)
 
             if args.cross_venue_every and (cycle == 1 or cycle % args.cross_venue_every == 0):
                 cv_cmd = [python, "scripts/run_cross_venue_scanner.py", "--leagues", args.cross_venue_leagues, "--paper"]

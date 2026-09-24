@@ -1,0 +1,205 @@
+"""Fetches short-dated, non-sports markets from Kalshi and Polymarket and
+turns them into venue-neutral relations.Contract objects -- with every bit
+of resolution detail each venue exposes packed into `context` for Jev.
+
+Verified live 2026-09-24:
+- Kalshi GET /events with with_nested_markets + min_close_ts/max_close_ts
+  paginates to completion (~70 pages, ~25s). The window filters EVENTS, so
+  some nested markets still close later -- re-filtered per market here.
+  Events carry category, mutually_exclusive and settlement_sources; markets
+  carry top-of-book sizes (yes_bid_size_fp / yes_ask_size_fp).
+- Polymarket gamma /markets honours end_date_min/end_date_max. Markets
+  carry bestBid/bestAsk (for outcome[0]) and a per-market feeSchedule.
+Sports are excluded on both venues: the cross-venue sports model already
+covers them, and this scanner is for cultural/economic/political events.
+"""
+from __future__ import annotations
+
+import json
+import time
+from datetime import datetime, timedelta, timezone
+
+import httpx
+
+from .kalshi_public import BASE as KALSHI_BASE
+from .polymarket_client import BASE as POLY_BASE
+from .relations import Contract
+
+EXCLUDED_KALSHI_CATEGORIES = {"Sports"}
+PAGE_PACING_S = 0.15
+
+
+def _parse_ts(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _f(v) -> float | None:
+    try:
+        return None if v in (None, "") else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolves_by(m: dict, horizon: datetime) -> bool:
+    """Closes AND is expected to settle inside the horizon -- a market that
+    stops trading next week but settles in a month ties capital up for a
+    month, which isn't 'upcoming'."""
+    close = _parse_ts(m.get("close_time"))
+    settle = _parse_ts(m.get("expected_expiration_time")) or close
+    return close is not None and settle is not None and settle <= horizon
+
+
+def kalshi_context(event: dict, m: dict) -> str:
+    sources = ", ".join(s.get("name", "") for s in event.get("settlement_sources") or [] if s.get("name"))
+    lines = [
+        "Venue: Kalshi",
+        f"Event: {event.get('title', '')}" + (f" -- {event.get('sub_title')}" if event.get("sub_title") else ""),
+        f"Market: {m.get('title', '')}",
+        f"YES means: {m.get('yes_sub_title') or m.get('title', '')}",
+        f"Rules: {m.get('rules_primary', '')}",
+    ]
+    if m.get("rules_secondary"):
+        lines.append(f"Additional rules: {m['rules_secondary']}")
+    if sources:
+        lines.append(f"Settlement sources: {sources}")
+    lines.append(f"Trading closes: {m.get('close_time')}; expected settlement: {m.get('expected_expiration_time')}")
+    if m.get("can_close_early"):
+        lines.append(f"Can close early: {m.get('early_close_condition') or 'yes'}")
+    if event.get("mutually_exclusive"):
+        lines.append("Kalshi flags the markets in this event as mutually exclusive.")
+    return "\n".join(lines)
+
+
+def fetch_kalshi_contracts(horizon_days: float = 7.0, max_pages: int = 120) -> list[Contract]:
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=horizon_days)
+    client = httpx.Client(base_url=KALSHI_BASE, timeout=30.0)
+    out: list[Contract] = []
+    cursor = None
+    for _ in range(max_pages):
+        params = {
+            "status": "open", "with_nested_markets": "true", "limit": 200,
+            "min_close_ts": int(now.timestamp()), "max_close_ts": int(horizon.timestamp()),
+        }
+        if cursor:
+            params["cursor"] = cursor
+        r = client.get("/events", params=params)
+        r.raise_for_status()
+        body = r.json()
+        for event in body.get("events", []):
+            if event.get("category") in EXCLUDED_KALSHI_CATEGORIES:
+                continue
+            for m in event.get("markets") or []:
+                if m.get("status") != "active" or not _resolves_by(m, horizon):
+                    continue
+                out.append(Contract(
+                    venue="kalshi",
+                    ticker=m["ticker"],
+                    event_id=event["event_ticker"],
+                    category=event.get("category"),
+                    title=f"{m.get('title', '')} -- {m.get('yes_sub_title') or ''}",
+                    context=kalshi_context(event, m),
+                    close_time=m.get("close_time"),
+                    yes_bid=_f(m.get("yes_bid_dollars")),
+                    yes_ask=_f(m.get("yes_ask_dollars")),
+                    yes_bid_size=_f(m.get("yes_bid_size_fp")),
+                    yes_ask_size=_f(m.get("yes_ask_size_fp")),
+                    event_mutually_exclusive=bool(event.get("mutually_exclusive")),
+                ))
+        cursor = body.get("cursor")
+        if not cursor:
+            break
+        time.sleep(PAGE_PACING_S)
+    return out
+
+
+def _is_sports(pm: dict) -> bool:
+    return bool(pm.get("sportsMarketType") or pm.get("gameStartTime")
+                or str(pm.get("feeType") or "").startswith("sports"))
+
+
+def polymarket_context(pm: dict) -> str:
+    event = (pm.get("events") or [{}])[0]
+    outcomes = json.loads(pm.get("outcomes") or "[]")
+    return "\n".join([
+        "Venue: Polymarket",
+        f"Event: {event.get('title', '')}",
+        f"Question: {pm.get('question', '')}",
+        f"YES means: outcome '{outcomes[0] if outcomes else 'Yes'}'",
+        f"Rules: {pm.get('description', '')}",
+        f"Resolution source: {pm.get('resolutionSource') or 'not stated'}",
+        f"Trading ends: {pm.get('endDate')}",
+    ])
+
+
+def fetch_polymarket_contracts(horizon_days: float = 7.0, max_offset: int = 3000, page_size: int = 100) -> list[Contract]:
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=horizon_days)
+    out: list[Contract] = []
+    for offset in range(0, max_offset, page_size):
+        r = httpx.get(f"{POLY_BASE}/markets", params={
+            "closed": "false", "active": "true", "limit": page_size, "offset": offset,
+            "order": "volume24hr", "ascending": "false",
+            "end_date_min": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end_date_max": horizon.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }, timeout=30.0)
+        if r.status_code == 422:
+            break  # gamma refuses offsets past ~2,000 (seen live): keep what we have
+        r.raise_for_status()
+        page = r.json()
+        if not page:
+            break
+        for pm in page:
+            if _is_sports(pm) or not pm.get("acceptingOrders", True):
+                continue
+            try:
+                outcomes = json.loads(pm.get("outcomes") or "[]")
+            except json.JSONDecodeError:
+                continue
+            if [o.lower() for o in outcomes] != ["yes", "no"]:
+                continue  # keep plain Yes/No markets: YES has one unambiguous meaning
+            sched = pm.get("feeSchedule") or {}
+            fees_on = pm.get("feesEnabled") and pm.get("feeType") != "zero_fees"
+            event = (pm.get("events") or [{}])[0]
+            out.append(Contract(
+                venue="polymarket",
+                ticker=f"PM-{pm['slug']}",
+                event_id=f"PM-{event.get('slug') or pm['slug']}",
+                category=event.get("category"),
+                title=pm.get("question", ""),
+                context=polymarket_context(pm),
+                close_time=pm.get("endDate"),
+                yes_bid=_f(pm.get("bestBid")),
+                yes_ask=_f(pm.get("bestAsk")),
+                fee_rate=float(sched.get("rate", 0.0)) if fees_on else 0.0,
+                fee_exponent=float(sched.get("exponent", 1.0)),
+            ))
+        time.sleep(PAGE_PACING_S)
+    return out
+
+
+def fetch_polymarket_market(slug: str) -> dict | None:
+    """One Polymarket market by slug, for scoring a paper position."""
+    r = httpx.get(f"{POLY_BASE}/markets", params={"slug": slug}, timeout=20.0)
+    r.raise_for_status()
+    rows = r.json()
+    return rows[0] if rows else None
+
+
+def polymarket_as_kalshi_shape(pm: dict) -> dict:
+    """Map a Polymarket market onto the few Kalshi fields the paper scorer
+    reads (status/result/yes_bid_dollars/yes_ask_dollars), so settlement
+    and mark-to-market work the same way for both venues."""
+    prices = [float(p) for p in json.loads(pm.get("outcomePrices") or "[]")]
+    shaped = {"yes_bid_dollars": pm.get("bestBid"), "yes_ask_dollars": pm.get("bestAsk"), "status": "active"}
+    if pm.get("closed") and prices:
+        if prices[0] >= 0.99:
+            shaped.update(status="settled", result="yes")
+        elif prices[0] <= 0.01:
+            shaped.update(status="settled", result="no")
+    return shaped

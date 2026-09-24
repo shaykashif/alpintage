@@ -45,7 +45,7 @@
 </head>
 <body>
   <h1>Kalshi Engine Dashboard</h1>
-  <div class="sub">Cross-venue statistical arbitrage (Kalshi vs. sportsbooks / Polymarket) plus ladder/bracket arbs, paper-traded -- no real orders anywhere. <span id="updated"></span></div>
+  <div class="sub">Relationship arbitrage on event markets (Jev-judged), cross-venue sports stat-arb, and ladder/bracket arbs, all paper-traded -- no real orders anywhere. <span id="updated"></span></div>
 
   <div class="grid">
 
@@ -70,6 +70,12 @@
       <h2>Stat-arb paper book -- equity curve (mark-to-market)</h2>
       <div id="paper-stats" class="stat-row"></div>
       <canvas id="paperChart"></canvas>
+    </div>
+
+    <div class="panel full">
+      <h2>Relationship arbitrage -- event markets (Jev-judged relations)</h2>
+      <div id="rel-stats" class="stat-row"></div>
+      <div id="rel-table"></div>
     </div>
 
     <div class="panel full">
@@ -124,6 +130,26 @@ async function refresh() {
   renderPredictions(data.predictions);
   renderCrossVenue(data.cross_venue);
   renderPaper(data.paper_trading);
+  renderRelations(data.relations);
+}
+
+function renderRelations(r) {
+  document.getElementById('rel-stats').innerHTML = `
+    <div class="stat"><div class="n">${r.pairs_judged}</div><div class="l">market pairs judged by Jev</div></div>
+    <div class="stat"><div class="n">${r.opportunities_logged}</div><div class="l">priced opportunities logged</div></div>
+    <div class="stat"><div class="n">${r.tradeable_logged}</div><div class="l">tradeable</div></div>
+    <div class="stat"><div class="n">${r.traded}</div><div class="l">paper-traded</div></div>
+  `;
+  const el = document.getElementById('rel-table');
+  if (!r.recent.length) {
+    el.innerHTML = '<div class="empty">no price violations of a Jev-confirmed relation yet -- expected to be rare</div>';
+    return;
+  }
+  el.innerHTML = '<table><tr><th>Relation</th><th>Legs</th><th>Edge / set</th><th>Qty</th><th>Status</th><th>When</th></tr>' +
+    r.recent.map(a => `<tr><td>${a.kind}</td><td style="white-space:normal;">${a.legs.join('<br>')}</td>` +
+      `<td ${pnlStyle(a.edge_per_set)}>${fmtUsd(a.edge_per_set)}</td><td>${a.qty}</td>` +
+      `<td style="max-width:260px;white-space:normal;">${a.traded ? '<span class="pill good">PAPER-TRADED</span>' : (a.note || '')}</td>` +
+      `<td>${timeAgo(a.logged_at)}</td></tr>`).join('') + '</table>';
 }
 
 function renderLoopHealth(h) {
@@ -222,6 +248,7 @@ function renderPaper(p) {
   const stats = document.getElementById('paper-stats');
   const pnl = p.pnl_summary || {};
   const sa = (pnl.by_strategy || {}).stat_arb || {};
+  const ra = (pnl.by_strategy || {}).relation_arb || {};
   const closed = pnl.closed_count || 0;
   const winRate = closed ? fmtPct((pnl.wins || 0) / closed) : '--';
   stats.innerHTML = `
@@ -229,6 +256,7 @@ function renderPaper(p) {
     <div class="stat"><div class="n" ${pnlStyle(pnl.realized_pnl)}>${fmtUsd(pnl.realized_pnl)}</div><div class="l">realized</div></div>
     <div class="stat"><div class="n" ${pnlStyle(pnl.unrealized_pnl)}>${fmtUsd(pnl.unrealized_pnl)}</div><div class="l">unrealized (at bid, net of exit fee)</div></div>
     <div class="stat"><div class="n" ${pnlStyle(sa.total_pnl)}>${fmtUsd(sa.total_pnl)}</div><div class="l">stat-arb only</div></div>
+    <div class="stat"><div class="n" ${pnlStyle(ra.total_pnl)}>${fmtUsd(ra.total_pnl)}</div><div class="l">relation-arb only</div></div>
     <div class="stat"><div class="n">${fmtUsd(pnl.open_cost)}</div><div class="l">capital at risk</div></div>
     <div class="stat"><div class="n">${pnl.open_count ?? '--'}</div><div class="l">open positions</div></div>
     <div class="stat"><div class="n">${closed}</div><div class="l">closed (win rate ${winRate})</div></div>
@@ -258,6 +286,7 @@ function renderPaper(p) {
         { type: 'line', label: 'Total PnL (mark-to-market)', data: curve.map(r => r.total_pnl), borderColor: '#4f8cff', backgroundColor: 'rgba(79,140,255,.12)', fill: 'origin', tension: 0.15, pointRadius: curve.length > 40 ? 0 : 2, yAxisID: 'y' },
         { type: 'line', label: 'Realized PnL', data: curve.map(r => r.realized_pnl), borderColor: '#3ecf8e', tension: 0.15, pointRadius: 0, yAxisID: 'y' },
         { type: 'line', label: 'Stat-arb PnL', data: curve.map(r => r.stat_arb_pnl ?? null), borderColor: '#ff8a4f', borderDash: [5, 4], tension: 0.15, pointRadius: 0, yAxisID: 'y' },
+        { type: 'line', label: 'Relation-arb PnL', data: curve.map(r => r.relation_arb_pnl ?? null), borderColor: '#c77dff', borderDash: [2, 3], tension: 0.15, pointRadius: 0, yAxisID: 'y' },
         { type: 'line', label: 'Capital at risk', data: curve.map(r => r.open_cost), borderColor: 'rgba(139,147,163,.6)', borderWidth: 1, stepped: true, pointRadius: 0, yAxisID: 'y2' },
       ]},
       options: {

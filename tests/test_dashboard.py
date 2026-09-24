@@ -20,7 +20,7 @@ def test_api_summary_returns_expected_shape():
     resp = client.get("/api/summary")
     assert resp.status_code == 200
     data = resp.get_json()
-    assert set(data.keys()) == {"generated_at", "predictions", "cross_venue", "paper_trading", "loop_health"}
+    assert set(data.keys()) == {"generated_at", "predictions", "cross_venue", "paper_trading", "relations", "loop_health"}
 
 
 def test_full_summary_does_not_crash_on_real_data():

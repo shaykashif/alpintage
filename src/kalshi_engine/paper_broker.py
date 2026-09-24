@@ -89,13 +89,16 @@ class PaperBroker:
     def _total_exposure_usd(self) -> float:
         return sum(self._position_usd_by_ticker().values())
 
-    def buy(self, ticker: str, side: str, price: float, qty: float = 1.0, reason: str = "", **tags) -> Fill | None:
+    def buy(self, ticker: str, side: str, price: float, qty: float = 1.0, reason: str = "",
+            fee_usd: float | None = None, **tags) -> Fill | None:
         """Simulate buying `qty` contracts of `side` ("yes" or "no") on
         `ticker` at `price`. Returns the Fill, or None (and logs why) if the
         risk gate vetoed it or cash was insufficient. Extra keyword `tags`
         (e.g. strategy, venue, fair, event_ticker) are logged verbatim on
         the fill row so ledger.py can reconstruct why it was opened."""
-        fee = taker_fee(qty, price)
+        # Kalshi's taker fee unless the caller supplies the venue's own
+        # (e.g. a Polymarket leg of a relation arb).
+        fee = taker_fee(qty, price) if fee_usd is None else fee_usd
         notional = price * qty
         cost = notional + float(fee)
 

@@ -9,7 +9,10 @@ fee). Writes:
     the dashboard plots. Run on every loop cycle, so it's a time series.
 
 Positions fully closed by an exit need no API call; only still-held
-tickers are fetched (paced, to stay clear of Kalshi's 429s).
+tickers are fetched (paced, to stay clear of Kalshi's 429s). Polymarket
+legs of relation arbs ("PM-<slug>") are fetched from Polymarket instead;
+their mark uses Kalshi's fee formula for the exit fee, a close-enough
+approximation for a paper mark.
 
 Usage:
     uv run python scripts/score_paper_fills.py
@@ -27,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from kalshi_engine import ledger  # noqa: E402
 from kalshi_engine.fees import taker_fee  # noqa: E402
 from kalshi_engine.kalshi_public import PublicClient  # noqa: E402
+from kalshi_engine.relation_sources import fetch_polymarket_market, polymarket_as_kalshi_shape  # noqa: E402
 
 FILLS_PATH = ledger.DEFAULT_LOG_PATH
 SUMMARY_PATH = Path(__file__).resolve().parent.parent / "data" / "paper_pnl_summary.json"
@@ -34,6 +38,15 @@ EQUITY_PATH = Path(__file__).resolve().parent.parent / "data" / "paper_equity.js
 
 STARTING_CASH_USD = 1000.0
 REQUEST_PACING_S = 0.15
+
+
+def fetch_market(client: PublicClient, ticker: str) -> dict | None:
+    """Kalshi market, or a Polymarket leg of a relation arb ("PM-<slug>")
+    mapped onto the Kalshi fields scoring reads."""
+    if ticker.startswith("PM-"):
+        pm = fetch_polymarket_market(ticker[3:])
+        return polymarket_as_kalshi_shape(pm) if pm else None
+    return client.market(ticker)
 
 
 def mark_price(market: dict, side: str) -> float | None:
@@ -127,7 +140,7 @@ def main() -> None:
         market = None
         if pos.qty_open > 0:
             try:
-                market = client.market(ticker)
+                market = fetch_market(client, ticker)
             except Exception as exc:  # noqa: BLE001
                 print(f"  {ticker}: could not fetch ({exc})")
             time.sleep(REQUEST_PACING_S)
