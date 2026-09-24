@@ -11,6 +11,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import ledger
+
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
 
@@ -117,13 +119,15 @@ def cross_venue_summary(top_n: int = 15) -> dict:
     }
 
 
-def paper_trading_summary() -> dict:
-    """Fills/vetoes come straight from the log (fast). Realized PnL comes
-    from a cached file that score_paper_fills.py writes -- see its
-    --write-summary flag -- since computing it live means calling Kalshi
-    per open position, which does not belong in a web request path."""
+def paper_trading_summary(recent_n: int = 30) -> dict:
+    """Fills/exits/vetoes come straight from the log (fast). PnL -- realized
+    and mark-to-market -- comes from files score_paper_fills.py writes each
+    loop cycle (the cached summary and the appended equity curve), since
+    marking open positions means calling Kalshi per ticker, which does not
+    belong in a web request path."""
     rows = _load_jsonl(DATA_DIR / "paper_fills.jsonl")
     fills = [r for r in rows if r.get("event") == "fill"]
+    sells = [r for r in rows if r.get("event") == "sell"]
     vetoes = [r for r in rows if r.get("event") == "veto"]
 
     cached_pnl_path = DATA_DIR / "paper_pnl_summary.json"
@@ -134,11 +138,42 @@ def paper_trading_summary() -> dict:
         except json.JSONDecodeError:
             pnl_summary = None
 
+    # One point per scoring pass (every loop cycle): the equity curve.
+    equity_curve = [
+        {
+            "ts": r.get("ts"),
+            "total_pnl": r.get("total_pnl"),
+            "realized_pnl": r.get("realized_pnl"),
+            "open_cost": r.get("open_cost"),
+            "stat_arb_pnl": (r.get("by_strategy") or {}).get(ledger.STAT_ARB_STRATEGY),
+        }
+        for r in _load_jsonl(DATA_DIR / "paper_equity.jsonl")
+    ]
+
+    trades = sorted(fills + sells, key=lambda r: r.get("ts") or "", reverse=True)[:recent_n]
     return {
         "total_fills": len(fills),
+        "total_exits": len(sells),
         "total_vetoes": len(vetoes),
         "recent_vetoes": [r.get("reason") for r in vetoes[-5:]],
         "pnl_summary": pnl_summary,
+        "equity_curve": equity_curve,
+        "recent_fills": [
+            {
+                "action": "sell" if t.get("event") == "sell" else "buy",
+                "strategy": ledger.strategy_of(t),
+                "ticker": t.get("ticker"),
+                "side": t.get("side"),
+                "qty": t.get("qty"),
+                "price": t.get("price"),
+                "fair": t.get("fair"),
+                "cost_usd": t.get("cost_usd"),
+                "pnl_usd": t.get("pnl_usd"),
+                "reason": t.get("reason"),
+                "ts": t.get("ts"),
+            }
+            for t in trades
+        ],
     }
 
 

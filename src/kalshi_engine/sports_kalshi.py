@@ -10,7 +10,7 @@ event_match.py's date pre-filter should use, not close_time."""
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .kalshi_public import PublicClient, market_implied_prob
@@ -41,6 +41,7 @@ class KalshiGame:
     team_asks: dict[str, float]  # team name -> yes_ask_dollars -- the real price a buy would pay
     team_tickers: dict[str, str]  # team name -> market ticker
     rules_text: str  # rules_primary from either team's market -- names both teams
+    team_bids: dict[str, float] = field(default_factory=dict)  # team name -> yes_bid_dollars -- what a sell would get
 
 
 def fetch_moneyline_games(series_ticker: str, max_pages: int = 5) -> list[KalshiGame]:
@@ -55,7 +56,7 @@ def fetch_moneyline_games(series_ticker: str, max_pages: int = 5) -> list[Kalshi
     for event_ticker, legs in by_event.items():
         if len(legs) != 2:
             continue  # a plain moneyline game has exactly two team-markets
-        team_probs, team_asks, team_tickers = {}, {}, {}
+        team_probs, team_asks, team_bids, team_tickers = {}, {}, {}, {}
         for m in legs:
             prob = market_implied_prob(m)
             if prob is None:
@@ -63,6 +64,7 @@ def fetch_moneyline_games(series_ticker: str, max_pages: int = 5) -> list[Kalshi
             team = m.get("yes_sub_title") or m["ticker"]
             team_probs[team] = prob
             team_asks[team] = float(m["yes_ask_dollars"])
+            team_bids[team] = float(m["yes_bid_dollars"])
             team_tickers[team] = m["ticker"]
         if len(team_probs) != 2:
             continue  # skip games with an empty book on either side
@@ -75,5 +77,6 @@ def fetch_moneyline_games(series_ticker: str, max_pages: int = 5) -> list[Kalshi
             team_asks=team_asks,
             team_tickers=team_tickers,
             rules_text=rules_text,
+            team_bids=team_bids,
         ))
     return games

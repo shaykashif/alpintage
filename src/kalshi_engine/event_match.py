@@ -40,6 +40,25 @@ MATCH_INSTRUCTIONS = (
 
 MATCH_CONFIDENCE_THRESHOLD = 0.70  # jev_prob above this counts as a confirmed match
 
+TEAM_PAIRING_INSTRUCTIONS = (
+    "Both sources describe the same single sports game, but name the teams "
+    "differently. Below is a proposed pairing of each team name from source A "
+    "with a team name from source B. Does EVERY pair refer to the same team? "
+    "Answer NO if any pair actually names two different teams -- watch for "
+    "similar-looking names of different schools or clubs, e.g. 'New Mexico' "
+    "(the Lobos) versus 'New Mexico State' (the Aggies), or 'Miami' versus "
+    "'Miami (OH)'. Answer based only on team identity, not on any price or "
+    "probability."
+)
+
+
+@dataclass
+class PairingCandidate:
+    pairs: list[tuple[str, str]]  # (source A team, source B team)
+    jev_prob: float
+    jev_route: str
+    confirmed: bool
+
 
 @dataclass
 class MatchCandidate:
@@ -95,6 +114,27 @@ def confirm_same_game(a_label: str, a_text: str, b_label: str, b_text: str) -> M
     return MatchCandidate(
         a_label=a_label,
         b_label=b_label,
+        jev_prob=result.prob,
+        jev_route=result.route,
+        confirmed=result.prob >= MATCH_CONFIDENCE_THRESHOLD,
+    )
+
+
+def confirm_team_pairing(a_label: str, a_text: str, b_label: str, b_text: str,
+                         pairs: list[tuple[str, str]]) -> PairingCandidate:
+    """Ask Jev whether a proposed team-to-team pairing is right, for a game
+    already confirmed by confirm_same_game. The name-similarity alignment
+    that proposes `pairs` is exactly what got 'New Mexico' vs 'New Mexico
+    St.' backwards once -- this makes that step a Jev judgment too, with
+    both games' full descriptions as context. Costs one real Jev call."""
+    pairing_text = "\n".join(f"- {a_label} '{a}'  <->  {b_label} '{b}'" for a, b in pairs)
+    state = (
+        f"SOURCE A ({a_label}):\n{a_text}\n\nSOURCE B ({b_label}):\n{b_text}\n\n"
+        f"PROPOSED TEAM PAIRING:\n{pairing_text}"
+    )
+    result = ask_noul(state, TEAM_PAIRING_INSTRUCTIONS)
+    return PairingCandidate(
+        pairs=pairs,
         jev_prob=result.prob,
         jev_route=result.route,
         confirmed=result.prob >= MATCH_CONFIDENCE_THRESHOLD,

@@ -31,7 +31,7 @@ def _big_edge_game():
         team_probs={"TeamA": 0.40, "TeamB": 0.60},
         team_asks={"TeamA": 0.40, "TeamB": 0.62},
         team_tickers={"TeamA": "TICK-A", "TeamB": "TICK-B"},
-    ), {"odds_api_avg_probs": {"TeamA": 0.60, "TeamB": 0.40}, "polymarket_probs": None}
+    ), {"odds_api_avg_probs": {"TeamA": 0.60, "TeamB": 0.40}, "polymarket_probs": None, "odds_api_team_map": {"TeamA": "TeamA", "TeamB": "TeamB"}}
 
 
 # --- default (POC) mode: trades on edge alone, no trust check ---
@@ -57,7 +57,7 @@ def test_poc_mode_no_trade_when_edge_too_small(tmp_path, monkeypatch):
         team_asks={"TeamA": 0.50, "TeamB": 0.52},
         team_tickers={"TeamA": "TICK-A", "TeamB": "TICK-B"},
     )
-    row = {"odds_api_avg_probs": {"TeamA": 0.505, "TeamB": 0.495}, "polymarket_probs": None}
+    row = {"odds_api_avg_probs": {"TeamA": 0.505, "TeamB": 0.495}, "polymarket_probs": None, "odds_api_team_map": {"TeamA": "TeamA", "TeamB": "TeamB"}}
     broker = _broker(tmp_path)
 
     rcvs._maybe_trade(kg, row, broker, set())
@@ -85,7 +85,7 @@ def test_implausibly_large_edge_is_skipped_not_traded(tmp_path, monkeypatch):
         team_asks={"TeamA": 0.46, "TeamB": 0.55},
         team_tickers={"TeamA": "TICK-A", "TeamB": "TICK-B"},
     )
-    row = {"odds_api_avg_probs": {"TeamA": 0.90, "TeamB": 0.10}, "polymarket_probs": None}
+    row = {"odds_api_avg_probs": {"TeamA": 0.90, "TeamB": 0.10}, "polymarket_probs": None, "odds_api_team_map": {"TeamA": "TeamA", "TeamB": "TeamB"}}
     broker = _broker(tmp_path)
 
     rcvs._maybe_trade(kg, row, broker, set())
@@ -115,3 +115,16 @@ def test_require_trust_allows_trade_when_trusted_and_edge_clears(tmp_path, monke
     rcvs._maybe_trade(kg, row, broker, set(), require_trust=True)
 
     assert "TICK-A" in broker.positions
+
+
+def test_no_trade_without_a_jev_verified_team_map(tmp_path, monkeypatch):
+    # Same big edge as above, but Jev never confirmed which team is which:
+    # the pairing is unverified, so the edge can't be trusted to be real.
+    monkeypatch.setattr(rcvs, "venue_trust", lambda venue_key: (True, "irrelevant"))
+    kg, row = _big_edge_game()
+    row["odds_api_team_map"] = None
+    broker = _broker(tmp_path)
+
+    rcvs._maybe_trade(kg, row, broker, set())
+
+    assert broker.positions == {}

@@ -108,7 +108,18 @@ def main() -> None:
             if not venue_probs:
                 scored[f"{venue_key}_brier"] = None
                 continue
-            pairs_for_venue = best_team_assignment(kalshi_probs, venue_probs)
+            # Use the pairing Jev verified at scan time. Rows logged before
+            # that existed have no such key -> fall back to name similarity;
+            # a key present but None means Jev rejected every pairing, so
+            # this venue can't be scored for this game.
+            map_key = f"{venue_key}_team_map"
+            if map_key in row:
+                if not row[map_key]:
+                    scored[f"{venue_key}_brier"] = None
+                    continue
+                pairs_for_venue = list(row[map_key].items())
+            else:
+                pairs_for_venue = best_team_assignment(kalshi_probs, venue_probs)
             venue_pairs = [(venue_probs[o], outcomes[k]) for k, o in pairs_for_venue if k in outcomes]
             scored[f"{venue_key}_brier"] = _brier(venue_pairs)
 

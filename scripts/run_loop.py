@@ -6,11 +6,16 @@ unattended operation. Nothing here sends a real order.
 2. run_cross_venue_scanner.py --paper: Kalshi vs. sportsbook (The Odds API)
    / Polymarket mispricing, with Jev used ONLY to confirm two listings
    describe the same real-world game (never to set a price or a trade
-   decision). POC mode by default: trades on any sufficiently large
-   divergence net of fees, no statistical validation gate -- see that
-   script's docstring for the honest caveat on what that does and doesn't
-   prove. Runs periodically (--cross-venue-every), not every cycle, since
-   it costs real Odds API quota.
+   decision). Run as a statistical-arbitrage book (stat_arb.py): Kelly-
+   sized entries on divergence net of fees, exits when Kalshi converges to
+   the reference, otherwise held to settlement. POC mode by default: no
+   statistical validation gate on entries -- see that script's docstring
+   for the honest caveat on what that does and doesn't prove. Runs
+   periodically (--cross-venue-every), not every cycle, since it costs
+   real Odds API quota -- so exits are also only checked that often.
+
+score_paper_fills.py runs every cycle: settles/marks every position and
+appends a point to data/paper_equity.jsonl, the dashboard's equity curve.
 
 This project's earlier, separate "ask Jev to predict any Kalshi market"
 research loop (collect_predictions.py / score_predictions.py) has been

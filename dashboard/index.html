@@ -45,7 +45,7 @@
 </head>
 <body>
   <h1>Kalshi Engine Dashboard</h1>
-  <div class="sub">Jev signal validation, cross-venue mispricing scan, paper trading -- no real orders anywhere. <span id="updated"></span></div>
+  <div class="sub">Cross-venue statistical arbitrage (Kalshi vs. sportsbooks / Polymarket) plus ladder/bracket arbs, paper-traded -- no real orders anywhere. <span id="updated"></span></div>
 
   <div class="grid">
 
@@ -66,14 +66,25 @@
       <canvas id="diffChart"></canvas>
     </div>
 
-    <div class="panel">
-      <h2>Paper trading</h2>
+    <div class="panel full">
+      <h2>Stat-arb paper book -- equity curve (mark-to-market)</h2>
       <div id="paper-stats" class="stat-row"></div>
+      <canvas id="paperChart"></canvas>
+    </div>
+
+    <div class="panel full">
+      <h2>Open paper positions</h2>
+      <div id="positions-table"></div>
     </div>
 
     <div class="panel full">
       <h2>Biggest cross-venue disagreements (logged)</h2>
       <div id="cv-table"></div>
+    </div>
+
+    <div class="panel full">
+      <h2>Recent paper trades (entries &amp; exits)</h2>
+      <div id="paper-table"></div>
     </div>
 
     <div class="panel full">
@@ -91,7 +102,7 @@
   <footer>Auto-refreshes every 60s. Detection and paper-trading only -- nothing here places a real order.</footer>
 
 <script>
-let brierChart, diffChart;
+let brierChart, diffChart, paperChart;
 
 function fmtPct(x) { return x === null || x === undefined ? '--' : (x * 100).toFixed(1) + '%'; }
 function fmtNum(x, d=4) { return x === null || x === undefined ? '--' : x.toFixed(d); }
@@ -201,21 +212,91 @@ function renderCrossVenue(c) {
       `<td>${JSON.stringify(r.kalshi_probs)}</td><td>${fmtPct(r.diff)}</td><td>${timeAgo(r.logged_at)}</td></tr>`).join('') + '</table>';
 }
 
+function fmtUsd(x) {
+  if (x === null || x === undefined) return '--';
+  return (x < 0 ? '-$' : '$') + Math.abs(x).toFixed(2);
+}
+function pnlStyle(x) { return x === null || x === undefined ? '' : `style="color:var(--${x >= 0 ? 'good' : 'bad'})"`; }
+
 function renderPaper(p) {
   const stats = document.getElementById('paper-stats');
-  const pnl = p.pnl_summary;
-  let pnlHtml = '';
-  if (pnl && (pnl.settled_count > 0)) {
-    const cls = pnl.net_pnl >= 0 ? 'good' : 'bad';
-    pnlHtml = `<div class="stat"><div class="n" style="color:var(--${cls})">$${pnl.net_pnl.toFixed(2)}</div><div class="l">net paper PnL (${pnl.settled_count} settled)</div></div>`;
-  }
+  const pnl = p.pnl_summary || {};
+  const sa = (pnl.by_strategy || {}).stat_arb || {};
+  const closed = pnl.closed_count || 0;
+  const winRate = closed ? fmtPct((pnl.wins || 0) / closed) : '--';
   stats.innerHTML = `
-    <div class="stat"><div class="n">${p.total_fills}</div><div class="l">fills</div></div>
+    <div class="stat"><div class="n" ${pnlStyle(pnl.total_pnl)}>${fmtUsd(pnl.total_pnl)}</div><div class="l">total PnL (realized + marked)</div></div>
+    <div class="stat"><div class="n" ${pnlStyle(pnl.realized_pnl)}>${fmtUsd(pnl.realized_pnl)}</div><div class="l">realized</div></div>
+    <div class="stat"><div class="n" ${pnlStyle(pnl.unrealized_pnl)}>${fmtUsd(pnl.unrealized_pnl)}</div><div class="l">unrealized (at bid, net of exit fee)</div></div>
+    <div class="stat"><div class="n" ${pnlStyle(sa.total_pnl)}>${fmtUsd(sa.total_pnl)}</div><div class="l">stat-arb only</div></div>
+    <div class="stat"><div class="n">${fmtUsd(pnl.open_cost)}</div><div class="l">capital at risk</div></div>
+    <div class="stat"><div class="n">${pnl.open_count ?? '--'}</div><div class="l">open positions</div></div>
+    <div class="stat"><div class="n">${closed}</div><div class="l">closed (win rate ${winRate})</div></div>
+    <div class="stat"><div class="n">${p.total_fills} / ${p.total_exits}</div><div class="l">entries / exits</div></div>
     <div class="stat"><div class="n">${p.total_vetoes}</div><div class="l">risk-gate vetoes</div></div>
-    ${pnlHtml}
   `;
-  if (!p.total_fills && !p.total_vetoes) {
-    stats.innerHTML += '<div class="empty">no paper trades yet -- normal, arb violations are rare by design</div>';
+
+  const ctx = document.getElementById('paperChart');
+  const curve = p.equity_curve || [];
+  if (curve.length === 0) {
+    ctx.style.display = 'none';
+    if (!document.getElementById('paper-empty')) {
+      const div = document.createElement('div');
+      div.id = 'paper-empty'; div.className = 'empty';
+      div.textContent = p.total_fills
+        ? 'equity curve starts at the next scoring pass (score_paper_fills.py runs every loop cycle)'
+        : 'no paper trades yet';
+      ctx.parentElement.appendChild(div);
+    }
+  } else {
+    ctx.style.display = 'block';
+    const old = document.getElementById('paper-empty'); if (old) old.remove();
+    const labels = curve.map(r => new Date(r.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
+    if (paperChart) paperChart.destroy();
+    paperChart = new Chart(ctx, {
+      data: { labels, datasets: [
+        { type: 'line', label: 'Total PnL (mark-to-market)', data: curve.map(r => r.total_pnl), borderColor: '#4f8cff', backgroundColor: 'rgba(79,140,255,.12)', fill: 'origin', tension: 0.15, pointRadius: curve.length > 40 ? 0 : 2, yAxisID: 'y' },
+        { type: 'line', label: 'Realized PnL', data: curve.map(r => r.realized_pnl), borderColor: '#3ecf8e', tension: 0.15, pointRadius: 0, yAxisID: 'y' },
+        { type: 'line', label: 'Stat-arb PnL', data: curve.map(r => r.stat_arb_pnl ?? null), borderColor: '#ff8a4f', borderDash: [5, 4], tension: 0.15, pointRadius: 0, yAxisID: 'y' },
+        { type: 'line', label: 'Capital at risk', data: curve.map(r => r.open_cost), borderColor: 'rgba(139,147,163,.6)', borderWidth: 1, stepped: true, pointRadius: 0, yAxisID: 'y2' },
+      ]},
+      options: {
+        responsive: true,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtUsd(c.parsed.y)}` } } },
+        scales: {
+          y: { grace: '15%', title: { display: true, text: 'PnL ($)' }, ticks: { callback: v => fmtUsd(v) } },
+          y2: { position: 'right', beginAtZero: true, grace: '25%', grid: { drawOnChartArea: false }, title: { display: true, text: 'capital at risk ($)' } },
+          x: { ticks: { maxTicksLimit: 10 } },
+        },
+      },
+    });
+  }
+
+  const posTable = document.getElementById('positions-table');
+  const open = (pnl.positions || []).filter(r => r.status === 'open');
+  if (open.length === 0) {
+    posTable.innerHTML = '<div class="empty">no open positions</div>';
+  } else {
+    posTable.innerHTML = '<table><tr><th>Ticker</th><th>Strategy</th><th>Side</th><th>Qty</th><th>Avg cost</th><th>Mark (bid)</th><th>Unrealized</th><th>Opened</th></tr>' +
+      open.map(r => `<tr><td>${r.ticker}</td><td>${r.strategy}${r.venue ? ' / ' + r.venue : ''}</td><td>${(r.side||'').toUpperCase()}</td>` +
+        `<td>${r.qty_open}</td><td>${fmtPct(r.avg_cost)}</td><td>${fmtPct(r.mark)}</td>` +
+        `<td ${pnlStyle(r.unrealized_pnl)}>${fmtUsd(r.unrealized_pnl)}</td><td>${timeAgo(r.opened_at)}</td></tr>`).join('') + '</table>';
+  }
+
+  const table = document.getElementById('paper-table');
+  if (!p.recent_fills || p.recent_fills.length === 0) {
+    table.innerHTML = '<div class="empty">no paper trades yet</div>';
+  } else {
+    table.innerHTML = '<table><tr><th>Action</th><th>Ticker</th><th>Strategy</th><th>Side</th><th>Qty</th><th>Price</th><th>Fair</th><th>Cost / PnL</th><th>Reason</th><th>When</th></tr>' +
+      p.recent_fills.map(f => {
+        const isSell = f.action === 'sell';
+        const money = isSell ? `<span ${pnlStyle(f.pnl_usd)}>${fmtUsd(f.pnl_usd)}</span>` : fmtUsd(f.cost_usd);
+        return `<tr><td><span class="pill ${isSell ? 'good' : ''}">${isSell ? 'EXIT' : 'ENTER'}</span></td><td>${f.ticker}</td>` +
+          `<td>${f.strategy}</td><td>${(f.side||'').toUpperCase()}</td><td>${f.qty ?? ''}</td>` +
+          `<td>${fmtPct(f.price)}</td><td>${fmtPct(f.fair)}</td><td>${money}</td>` +
+          `<td style="max-width:320px;white-space:normal;">${f.reason||''}</td><td>${timeAgo(f.ts)}</td></tr>`;
+      }).join('') + '</table>';
   }
 }
 
