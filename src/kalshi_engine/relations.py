@@ -49,6 +49,12 @@ from .fees import taker_fee
 # these err strict; re-calibrate as data/relations_cache.jsonl grows.
 RELATION_THRESHOLD = 0.80
 GATE_THRESHOLD = 0.90
+# Lower gate for pure implications (A => B, B => A, or both), by the
+# project owner's choice (2026-09-24). Still far above the false pairs'
+# 0.03-0.04 in the calibration set, and admits true ones that scored
+# 0.88-0.89. "Not both" / "at least one" keep GATE_THRESHOLD.
+IMPLICATION_GATE_THRESHOLD = 0.80
+IMPLICATIONS = frozenset({"a_implies_b", "b_implies_a"})
 
 # Minimum guaranteed profit per $1 set, net of fees, worth taking.
 MIN_EDGE = 0.005
@@ -212,14 +218,17 @@ def relation_state(a: Contract, b: Contract, today: str | None = None) -> str:
 
 
 def classify(probs: dict[str, float], threshold: float = RELATION_THRESHOLD,
-             gate_threshold: float = GATE_THRESHOLD) -> tuple[list[str], str | None]:
+             gate_threshold: float = GATE_THRESHOLD,
+             implication_gate_threshold: float = IMPLICATION_GATE_THRESHOLD) -> tuple[list[str], str | None]:
     """Relations Jev is confident in, or ([], why not). Requires the
-    same-underlying gate to clear the same bar, and rejects relation sets
+    same-underlying gate to clear its bar (the lower implication bar when
+    every confident relation is an implication), and rejects relation sets
     that contradict each other."""
     confident = frozenset(r for r in RELATIONS if probs.get(r, 0.0) >= threshold)
     if not confident:
         return [], None
-    if probs.get("same_underlying", 0.0) < gate_threshold:
+    gate = implication_gate_threshold if confident <= IMPLICATIONS else gate_threshold
+    if probs.get("same_underlying", 0.0) < gate:
         return [], f"same_underlying {probs.get('same_underlying', 0.0):.2f} below threshold"
     if confident not in _CONSISTENT:
         return [], f"inconsistent relation set {sorted(confident)}"

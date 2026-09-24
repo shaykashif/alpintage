@@ -131,6 +131,14 @@ def test_classify_rejects_when_gate_fails():
     assert rels == [] and "same_underlying" in why
 
 
+def test_implications_use_the_lower_gate_other_relations_do_not():
+    assert relations.classify(_probs(a_implies_b=0.85, same_underlying=0.82))[0] == ["a_implies_b"]
+    assert relations.classify(_probs(a_implies_b=0.9, b_implies_a=0.9, same_underlying=0.82))[0] == ["a_implies_b", "b_implies_a"]
+    assert relations.classify(_probs(b_implies_a=0.85, same_underlying=0.79))[0] == []
+    assert relations.classify(_probs(mutually_exclusive=0.9, same_underlying=0.85))[0] == []
+    assert relations.classify(_probs(exhaustive=0.9, same_underlying=0.85))[0] == []
+
+
 def test_classify_rejects_contradictions():
     rels, why = relations.classify(_probs(a_implies_b=0.9, mutually_exclusive=0.9))
     assert rels == [] and "inconsistent" in why

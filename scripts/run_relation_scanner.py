@@ -15,7 +15,8 @@ Each run:
      in data/relations_cache.jsonl keyed on both tickers AND a hash of both
      rulebooks, so a pair is only re-asked if its rules text changes. Jev
      is the only judge of the relation -- no human review, by the project
-     owner's choice (paper trading). Safeguards that remain: the gate (>= 0.90) and relation
+     owner's choice (paper trading). Safeguards that remain: the gate (>= 0.90, or >= 0.80
+     when the only relations are implications) and relation
      (>= 0.80) bars, calibrated on hand-labeled live pairs; internal
      consistency of the answers; mock answers never trade; and an
      implausibly large "guaranteed" edge is logged but not traded.
@@ -94,7 +95,9 @@ def ask_jev(a: relations.Contract, b: relations.Contract) -> dict:
 
 
 def verdict_relations(verdict: dict | None, threshold: float,
-                      gate_threshold: float = relations.GATE_THRESHOLD) -> tuple[list[str], str | None]:
+                      gate_threshold: float = relations.GATE_THRESHOLD,
+                      implication_gate_threshold: float = relations.IMPLICATION_GATE_THRESHOLD,
+                      ) -> tuple[list[str], str | None]:
     """Relations to act on. A mock verdict is cached (so it isn't re-asked
     every run) but never yields a relation -- it must not be mistaken for a
     judgment."""
@@ -102,7 +105,7 @@ def verdict_relations(verdict: dict | None, threshold: float,
         return [], None
     if verdict.get("route") != "typesafe":
         return [], "mock Jev (no TYPESAFE_API_KEY)"
-    return relations.classify(verdict["probs"], threshold, gate_threshold)
+    return relations.classify(verdict["probs"], threshold, gate_threshold, implication_gate_threshold)
 
 
 def classify_pairs(pairs, cache: dict, max_new: int, workers: int) -> dict[str, dict]:
@@ -195,6 +198,8 @@ def main() -> None:
                     help="Jev confidence required on the relation itself (applied to cached answers too)")
     ap.add_argument("--gate-threshold", type=float, default=relations.GATE_THRESHOLD,
                     help="Jev confidence required that both markets measure the same underlying thing")
+    ap.add_argument("--implication-gate-threshold", type=float, default=relations.IMPLICATION_GATE_THRESHOLD,
+                    help="the same, when every confident relation is an implication (If A then B / If B then A)")
     ap.add_argument("--no-polymarket", action="store_true")
     ap.add_argument("--paper", action="store_true", help="paper-trade every tradeable arb (all legs or none)")
     args = ap.parse_args()
@@ -236,7 +241,7 @@ def main() -> None:
         verdict = cache.get(relations.pair_key(a, b))
         if not verdict or verdict.get("route") != "typesafe":
             continue
-        rels, why_not = verdict_relations(verdict, args.threshold, args.gate_threshold)
+        rels, why_not = verdict_relations(verdict, args.threshold, args.gate_threshold, args.implication_gate_threshold)
         if why_not and why_not.startswith("inconsistent"):
             inconsistent += 1
         row, arbs = comparison_row(a, b, verdict, rels, why_not)
