@@ -7,8 +7,7 @@
 <meta name="description" content="Pternas is an arbitrage engine that uses frontier classification models to cross compare thousands of cultural and economic events in real time, finding discrepancies and violations with unmatched speed.">
 <link rel="canonical" href="https://pternas.com/">
 <meta name="robots" content="index, follow">
-<meta name="theme-color" media="(prefers-color-scheme: light)" content="#F7F6F5">
-<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#121110">
+<meta name="theme-color" content="#F7F6F5">
 
 <!-- Favicons: SVG follows the browser theme; ICO/PNG for older browsers and iOS. -->
 <link rel="icon" href="/assets/brand/favicon.svg" type="image/svg+xml">
@@ -43,11 +42,13 @@
 }
 </script>
 <script>
-  // Before first paint: saved theme choice (else OS preference applies via
-  // CSS), and hide reveal targets only if motion is allowed -- with a
+  // Before first paint: the visitor's saved theme choice, else light (the
+  // default regardless of OS setting, by the owner's choice), and hide reveal targets only if motion is allowed -- with a
   // fallback that un-hides them if the animation module never loads.
   (function () {
-    try { var t = localStorage.getItem("pternas-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+    var t = "light";
+    try { var saved = localStorage.getItem("pternas-theme"); if (saved === "dark") t = saved; } catch (e) {}
+    document.documentElement.dataset.theme = t;
     if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       document.documentElement.classList.add("js-motion");
       setTimeout(function () { if (!window.__revealed) document.documentElement.classList.remove("js-motion"); }, 2500);
@@ -57,7 +58,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/app.css?v=10">
+<link rel="stylesheet" href="/assets/app.css?v=12">
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -76,16 +77,6 @@
   </header>
 
   <main id="top">
-    <section class="section" id="relations" aria-labelledby="rel-h">
-      <div class="section-head" data-reveal>
-        <span class="section-index">01</span><h2 id="rel-h">Relationship arbitrage</h2>
-      </div>
-      <div class="ledger" data-reveal>
-        <div class="stats-row" id="rel-stats"></div>
-        <div class="cell"><div class="table-wrap" id="rel-table"></div></div>
-      </div>
-    </section>
-
     <section class="hero" data-reveal aria-labelledby="hero-title">
       <canvas class="hero-dots" id="dots" aria-hidden="true"></canvas>
       <div class="hero-copy">
@@ -108,6 +99,16 @@
       </div>
     </section>
 
+
+    <section class="section" id="relations" aria-labelledby="rel-h">
+      <div class="section-head" data-reveal>
+        <span class="section-index">01</span><h2 id="rel-h">Relationship arbitrage</h2>
+      </div>
+      <div class="ledger" data-reveal>
+        <div class="stats-row" id="rel-stats"></div>
+        <div class="cell"><div class="table-wrap" id="rel-table"></div></div>
+      </div>
+    </section>
 
     <section class="section" id="book" aria-labelledby="book-h">
       <div class="section-head" data-reveal>
@@ -173,6 +174,6 @@
   </footer>
 </div>
 
-<script type="module" src="/assets/app.js?v=13"></script>
+<script type="module" src="/assets/app.js?v=14"></script>
 </body>
 </html>

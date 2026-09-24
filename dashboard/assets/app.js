@@ -146,7 +146,7 @@ let dots, helix, lastData = null;
 function currentTheme() {
   const set = document.documentElement.dataset.theme;
   if (set) return set;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return "light"; // default regardless of the OS setting
 }
 function applyTheme(theme, persist) {
   document.documentElement.dataset.theme = theme;
@@ -157,11 +157,6 @@ function applyTheme(theme, persist) {
   if (lastData) renderCharts(lastData, { animateLines: false });
 }
 document.querySelectorAll("[data-theme-set]").forEach((b) => b.addEventListener("click", () => applyTheme(b.dataset.themeSet, true)));
-window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  let saved = null;
-  try { saved = localStorage.getItem("pternas-theme"); } catch (e) { /* ignore */ }
-  if (!saved) { delete document.documentElement.dataset.theme; applyTheme(currentTheme(), false); }
-});
 
 // ---- hero visuals ---------------------------------------------------------------
 dots = new DotField($("dots"));
@@ -265,7 +260,7 @@ function setHeroMode(mode) {
   ["lcd", "h-realized", "h-unrealized", "h-capital"].forEach((k) => shown.delete(k)); // don't tween across units
   // Section order: comparisons first while there's no book to show.
   const main = $("top"), cmp = $("comparisons");
-  if (mode === "comparisons") main.insertBefore(cmp, $("book")); // right under the hero
+  if (mode === "comparisons") main.insertBefore(cmp, $("book")); // second, after Relationship arbitrage
   else main.insertBefore(cmp, $("positions"));
   main.querySelectorAll(":scope > .section .section-index").forEach((el, i) => (el.textContent = String(i + 1).padStart(2, "0")));
 }

@@ -33,16 +33,6 @@
   color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #121110; --bg-sunk: #0C0B0A; --rule: #2A2825; --rule-strong: #45423E;
-    --ink: #EDEAE4; --ink-2: rgba(237, 234, 228, 0.66); --ink-3: rgba(237, 234, 228, 0.42);
-    --accent: #7568FF; --accent-ink: #0C0B0A; --series-1: #7568FF; --series-2: #E3682E;
-    --good: #43B97C; --bad: #F06A5C; --seg-off: rgba(237, 234, 228, 0.08);
-    --dot: rgba(237, 234, 228, 0.5); --fiber: #EDEAE4; --grid-line: rgba(237, 234, 228, 0.08);
-    color-scheme: dark;
-  }
-}
 :root[data-theme="dark"] {
   --bg: #121110; --bg-sunk: #0C0B0A; --rule: #2A2825; --rule-strong: #45423E;
   --ink: #EDEAE4; --ink-2: rgba(237, 234, 228, 0.66); --ink-3: rgba(237, 234, 228, 0.42);
@@ -144,7 +134,6 @@ a { color: inherit; }
 
 /* ---- sections ------------------------------------------------------------ */
 .section { margin-top: 56px; scroll-margin-top: 72px; }
-main > .section:first-child { margin-top: 28px; }
 .section-head { display: flex; align-items: baseline; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--ink); }
 .section-index { font-family: var(--mono); font-size: 11px; color: var(--ink-3); letter-spacing: 0.06em; }
 .section-head h2 { font-weight: 400; font-size: 24px; letter-spacing: -0.015em; margin: 0; }
