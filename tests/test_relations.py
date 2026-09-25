@@ -11,6 +11,7 @@ import run_relation_scanner as rrs  # noqa: E402
 from kalshi_engine import ledger, relations  # noqa: E402
 from kalshi_engine.paper_broker import PaperBroker  # noqa: E402
 from kalshi_engine.relation_sources import polymarket_as_kalshi_shape  # noqa: E402
+from kalshi_engine.relation_trading import HeldBook  # noqa: E402
 from kalshi_engine.risk import RiskLimits  # noqa: E402
 
 
@@ -191,7 +192,7 @@ def _arb():
 
 def test_execute_buys_every_leg_with_tags_and_venue_fees(tmp_path):
     broker = PaperBroker(limits=_limits(tmp_path), log_path=tmp_path / "f.jsonl")
-    ok, _ = rrs.execute(_arb(), broker, set(), {"probs": {"a_implies_b": 0.9}})
+    ok, _ = rrs.execute(_arb(), broker, HeldBook(), {"probs": {"a_implies_b": 0.9}})
     assert ok and set(broker.positions) == {"A", "PM-b"}
     rows = ledger.load_rows(tmp_path / "f.jsonl")
     assert {r["strategy"] for r in rows} == {"relation_arb"}
@@ -201,15 +202,46 @@ def test_execute_buys_every_leg_with_tags_and_venue_fees(tmp_path):
 
 def test_execute_buys_nothing_if_the_whole_set_would_breach_exposure(tmp_path):
     broker = PaperBroker(limits=_limits(tmp_path, max_total_exposure_usd=12.0), log_path=tmp_path / "f.jsonl")
-    ok, why = rrs.execute(_arb(), broker, set(), None)
+    ok, why = rrs.execute(_arb(), broker, HeldBook(), None)
     assert not ok and "exposure" in why
     assert broker.positions == {}  # never half a set
 
 
-def test_execute_skips_when_a_leg_is_already_held(tmp_path):
+def test_execute_skips_a_set_sharing_a_leg_with_a_different_held_set(tmp_path):
     broker = PaperBroker(limits=_limits(tmp_path), log_path=tmp_path / "f.jsonl")
-    ok, why = rrs.execute(_arb(), broker, {"A"}, None)
-    assert not ok and broker.positions == {}
+    ok, why = rrs.execute(_arb(), broker, HeldBook({"A": "mutually_exclusive:A|OTHER"}), None)
+    assert not ok and "different set" in why and broker.positions == {}
+
+
+def _me_arb(no_a_ask, no_b_ask, depth=1000.0):
+    # NO A + NO B, A and B mutually exclusive: NO asks are 1 - YES bids.
+    a = C("A", round(1 - no_a_ask, 4), round(1 - no_a_ask + 0.01, 4), bid_size=depth)
+    b = C("B", round(1 - no_b_ask, 4), round(1 - no_b_ask + 0.01, 4), bid_size=depth)
+    return relations.relation_arb("mutually_exclusive", a, b)
+
+
+def test_held_set_is_topped_up_only_at_a_better_price(tmp_path):
+    broker = PaperBroker(limits=_limits(tmp_path), log_path=tmp_path / "f.jsonl")
+    ok, _ = rrs.execute(_me_arb(0.20, 0.77, depth=12), broker, HeldBook(), None)  # 3c/set, 12 sets
+    assert ok and broker.positions["A"]["qty"] == 12
+
+    held = HeldBook.from_broker(broker)
+    ok, why = rrs.execute(_me_arb(0.20, 0.77, depth=12), broker, held, None)  # same quote again
+    assert not ok and "already hold this set" in why
+
+    ok, why = rrs.execute(_me_arb(0.15, 0.79, depth=18), broker, held, None)  # 6c/set: a better price
+    assert ok and why.startswith("topped up")
+    assert broker.positions["A"]["qty"] == 30 and broker.positions["B"]["qty"] == 30
+    rows = [r for r in ledger.load_rows(tmp_path / "f.jsonl") if r["event"] == "fill"]
+    assert {r["arb_group"] for r in rows} == {"mutually_exclusive:A|B"} and rows[-1]["topup"] is True
+
+
+def test_top_up_shrinks_to_the_per_market_limit(tmp_path):
+    broker = PaperBroker(limits=_limits(tmp_path, max_position_usd=30.0), log_path=tmp_path / "f.jsonl")
+    ok, _ = rrs.execute(_me_arb(0.20, 0.77, depth=30), broker, HeldBook(), None)  # B: 30 x 0.77 = $23.10
+    assert ok
+    ok, why = rrs.execute(_me_arb(0.15, 0.79, depth=100), broker, HeldBook.from_broker(broker), None)
+    assert ok and broker.positions["B"]["qty"] == 30 + 8  # ($30 - $23.10) / 0.79 = 8.7 -> 8
 
 
 # --- Polymarket settlement shape --------------------------------------------
@@ -249,3 +281,40 @@ def test_only_old_verdicts_accepting_a_stricter_relation_are_reasked():
     assert not rrs.needs_reask(v(None, a_implies_b=0.95))  # implication question unchanged
     assert not rrs.needs_reask(v(None, mutually_exclusive=0.5))  # rejected either way
     assert not rrs.needs_reask(None)
+
+
+# --- early exit ---------------------------------------------------------------
+
+def _held_pair(tmp_path, **kw):
+    from kalshi_engine import relation_trading as rt
+    broker = PaperBroker(limits=_limits(tmp_path), log_path=tmp_path / "f.jsonl")
+    assert rrs.execute(_me_arb(0.20, 0.77, depth=10), broker, HeldBook(), None)[0]  # 10 sets for $9.70
+    (s,) = rt.held_sets(ledger.load_rows(tmp_path / "f.jsonl"))
+    return rt, broker, s
+
+
+def test_exit_when_selling_now_beats_the_guaranteed_payout(tmp_path):
+    rt, broker, s = _held_pair(tmp_path)
+    assert (s.qty, s.payout_per_set, s.legs) == (10, 1.0, {"A": "no", "B": "no"})
+    # NO bids 0.30 + 0.75 = $1.05 a set: more than the $1 it's guaranteed to pay.
+    quotes = {"A": C("A", 0.60, 0.70, ask_size=50), "B": C("B", 0.20, 0.25, ask_size=50)}
+    ((_, q),) = rt.exit_candidates([s], quotes)
+    assert q["proceeds"] == pytest.approx(10.5 - float(ledger_fee(10, 0.30)) - float(ledger_fee(10, 0.75)))
+    ok, _ = rt.execute_exit(s, q, broker)
+    assert ok and broker.positions == {}
+    sells = [r for r in ledger.load_rows(tmp_path / "f.jsonl") if r["event"] == "sell"]
+    assert len(sells) == 2 and all(r["arb_group"] == s.group for r in sells)
+    assert rt.held_sets(ledger.load_rows(tmp_path / "f.jsonl")) == []
+
+
+def test_no_exit_below_the_guarantee_or_without_depth(tmp_path):
+    rt, _, s = _held_pair(tmp_path)
+    below = {"A": C("A", 0.60, 0.72, ask_size=50), "B": C("B", 0.20, 0.25, ask_size=50)}  # 0.28 + 0.75 = 1.03 - fees
+    assert rt.exit_candidates([s], below) == []
+    thin = {"A": C("A", 0.50, 0.55, ask_size=5), "B": C("B", 0.20, 0.25, ask_size=50)}  # only 5 of 10 sellable
+    assert rt.exit_candidates([s], thin) == []
+
+
+def ledger_fee(qty, price):
+    from kalshi_engine.fees import taker_fee
+    return taker_fee(qty, price)

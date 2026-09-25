@@ -55,7 +55,7 @@ from kalshi_engine import ledger, relations  # noqa: E402
 from kalshi_engine.jev_client import ask_noul_multi  # noqa: E402
 from kalshi_engine.paper_broker import PaperBroker  # noqa: E402
 from kalshi_engine.relation_trading import (  # noqa: E402
-    ARBS_PATH, STRATEGY, append_arb_rows, arb_row, execute, price_relations, settled_payouts, write_watchlist,
+    ARBS_PATH, STRATEGY, HeldBook, append_arb_rows, arb_row, execute, price_relations, settled_payouts, write_watchlist,
 )
 from kalshi_engine.relation_sources import (  # noqa: E402
     fetch_kalshi_events, fetch_polymarket_events, kalshi_contracts, polymarket_contracts, topic_subjects,
@@ -288,11 +288,11 @@ def main() -> None:
     # The watcher trades from the same ledger every few seconds: hold the
     # lock from reading the book to the last buy so neither double-buys.
     with ledger.ledger_lock() if args.paper else contextlib.nullcontext():
-        broker, held = None, set()
+        broker, held = None, HeldBook()
         if args.paper:
             broker = PaperBroker.from_ledger(settled=settled_payouts())
-            held = set(broker.positions)
-            print(f"[book] cash ${broker.cash_usd:.2f}, {len(held)} open position(s)")
+            held = HeldBook.from_broker(broker)
+            print(f"[book] cash ${broker.cash_usd:.2f}, {len(held.group_of)} open position(s)")
         for arb, verdict in opportunities:
             row = arb_row(arb, verdict)
             legs_txt = " + ".join(f"{l.side.upper()} {l.contract.ticker} @{l.price:.2f}" for l in arb.legs)

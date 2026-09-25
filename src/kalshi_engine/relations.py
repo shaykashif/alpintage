@@ -291,6 +291,12 @@ def _evaluate(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg
     return arb
 
 
+def resize(arb: Arb, max_qty: int) -> Arb:
+    """The same set at most `max_qty` deep, re-priced (fees, edge and
+    tradeability all depend on quantity)."""
+    return _evaluate(arb.kind, arb.legs, arb.payout_per_set, 1e12, max(0, min(arb.qty, max_qty)))
+
+
 def relation_arb(relation: str, a: Contract, b: Contract, max_notional_per_leg: float = 100.0, max_qty: int = 500) -> Arb | None:
     """The two-leg arbitrage implied by `relation`, priced at the current
     asks. None if a leg has no ask at all."""

@@ -67,8 +67,8 @@ from kalshi_engine.relation_sources import (  # noqa: E402
     Quote, fetch_kalshi_quotes, fetch_polymarket_quotes, polymarket_yes_tokens,
 )
 from kalshi_engine.relation_trading import (  # noqa: E402
-    LIVE_PATH, WATCHLIST_PATH, append_arb_rows, arb_row, execute, load_watchlist, pair_id,
-    price_relations, settled_payouts, write_json_atomic,
+    LIVE_PATH, WATCHLIST_PATH, HeldBook, append_arb_rows, arb_row, execute, execute_exit, exit_candidates,
+    held_sets, load_watchlist, pair_id, price_relations, settled_payouts, write_json_atomic,
 )
 
 BACKOFF_MAX_S = 60.0
@@ -155,7 +155,7 @@ def price_and_trade(pairs: list[dict], contracts: list[relations.Contract], quot
         tradeable = paper and any(arb.tradeable for arb, _ in new)
         with ledger.ledger_lock() if tradeable else contextlib.nullcontext():
             broker = PaperBroker.from_ledger(settled=settled_payouts()) if tradeable else None
-            held = set(broker.positions) if broker else set()
+            held = HeldBook.from_broker(broker) if broker else HeldBook()
             for arb, verdict in new:
                 row = arb_row(arb, verdict, source="watch")
                 legs = " + ".join(f"{l.side.upper()} {l.contract.ticker} @{l.price:.2f}" for l in arb.legs)
@@ -166,6 +166,9 @@ def price_and_trade(pairs: list[dict], contracts: list[relations.Contract], quot
                     status = "PAPER-TRADED" if ok else f"not traded ({why})"
                 logged.append(f"[{arb.kind}] edge ${arb.edge_per_set:.3f}/set x{arb.qty}: {legs} -- {status}")
                 append_arb_rows([row])
+
+    if paper:
+        logged += early_exits(contracts)
 
     counts: dict[str, int] = {}
     for r in rows:
@@ -178,6 +181,33 @@ def price_and_trade(pairs: list[dict], contracts: list[relations.Contract], quot
     if write:
         write_json_atomic(LIVE_PATH, live)
     return live, logged
+
+
+_held_cache: dict = {"mtime": None, "sets": []}
+
+
+def early_exits(contracts: list[relations.Contract]) -> list[str]:
+    """Sell any held set whose legs, sold now at their bids, beat the set's
+    guaranteed payout (relation_trading.exit_candidates). The held sets are
+    re-read only when the ledger file changes, so checking is cheap on every
+    pricing pass; the lock is taken only when a set actually qualifies."""
+    try:
+        mtime = ledger.DEFAULT_LOG_PATH.stat().st_mtime
+    except FileNotFoundError:
+        return []
+    if mtime != _held_cache["mtime"]:
+        _held_cache["sets"], _held_cache["mtime"] = held_sets(ledger.load_rows(ledger.DEFAULT_LOG_PATH)), mtime
+    candidates = exit_candidates(_held_cache["sets"], {c.ticker: c for c in contracts})
+    if not candidates:
+        return []
+    logged = []
+    with ledger.ledger_lock():
+        broker = PaperBroker.from_ledger(settled=settled_payouts())
+        for s, q in candidates:
+            ok, why = execute_exit(s, q, broker)
+            logged.append(f"[exit] {s.group}: {'EXITED ' if ok else 'not exited: '}{why}")
+    _held_cache["mtime"] = None  # re-read after any sale
+    return logged
 
 
 def write_waiting(watch_found: bool) -> None:

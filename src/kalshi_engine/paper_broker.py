@@ -134,7 +134,8 @@ class PaperBroker:
         self._log({"event": "fill", "reason": reason, **tags, **fill.__dict__})
         return fill
 
-    def sell(self, ticker: str, price: float, qty: float | None = None, reason: str = "", **tags) -> Fill | None:
+    def sell(self, ticker: str, price: float, qty: float | None = None, reason: str = "",
+             fee_usd: float | None = None, **tags) -> Fill | None:
         """Simulate selling (closing) `qty` contracts of an open position at
         `price` -- the bid on the held side. Defaults to the whole position.
         Exits are never risk-vetoed (reducing exposure is always allowed),
@@ -147,7 +148,8 @@ class PaperBroker:
             self._log({"event": "veto", "ticker": ticker, "side": pos["side"], "reason": "kill switch active (exit)"})
             return None
         qty = min(qty or pos["qty"], pos["qty"])
-        fee = float(taker_fee(qty, price))
+        # Kalshi's taker fee unless the caller supplies the venue's own.
+        fee = float(taker_fee(qty, price)) if fee_usd is None else fee_usd
         proceeds = price * qty - fee
         pnl = proceeds - pos.get("avg_cost", pos["avg_price"]) * qty
 

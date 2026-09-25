@@ -13,12 +13,13 @@ never buy the same violation twice.
 from __future__ import annotations
 
 import json
+import math
 import os
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import relations
+from . import ledger, relations
 from .paper_broker import PaperBroker
 
 DATA = Path(__file__).resolve().parents[2] / "data"
@@ -139,14 +140,66 @@ def settled_payouts(path: Path = SUMMARY_PATH) -> dict[str, float]:
     return {p["ticker"]: p.get("payout", 0.0) for p in summary.get("positions", []) if p.get("status") == "settled"}
 
 
-def execute(arb: relations.Arb, broker: PaperBroker, held: set[str], verdict: dict | None) -> tuple[bool, str]:
+def arb_group(arb: relations.Arb) -> str:
+    """One id per set: its relation and legs. Top-ups of a set share it."""
+    return f"{arb.kind}:{'|'.join(l.contract.ticker for l in arb.legs)}"
+
+
+@dataclass
+class HeldBook:
+    """Which set each open relation-arb leg belongs to, and the edge each
+    set was last entered at -- what execute() needs to tell a top-up of a
+    held set from a new set that would share a leg with it."""
+    group_of: dict[str, str | None] = field(default_factory=dict)  # held ticker -> arb_group
+    last_edge: dict[str, float] = field(default_factory=dict)  # arb_group -> edge/set at its latest entry
+
+    @classmethod
+    def from_broker(cls, broker: PaperBroker) -> HeldBook:
+        """Only tickers the broker still holds (it already dropped settled ones)."""
+        rows = ledger.load_rows(broker.log_path)
+        positions = ledger.build_positions(rows)
+        book = cls({t: positions[t].meta.get("arb_group") if t in positions else None for t in broker.positions})
+        for r in rows:
+            if r.get("event") == "fill" and r.get("arb_group") and r.get("edge") is not None:
+                book.last_edge[r["arb_group"]] = r["edge"]
+        return book
+
+
+# A top-up must beat the set's last entry by this much per set: re-buying
+# at the same quote would count the same resting depth twice.
+TOPUP_MIN_IMPROVEMENT = 0.005
+
+
+def execute(arb: relations.Arb, broker: PaperBroker, held: HeldBook, verdict: dict | None) -> tuple[bool, str]:
     """Buy every leg or none. A half-filled arb is a directional bet -- the
     exact failure behind the Sep 23 bracket losses -- so every check that
     could veto a leg runs BEFORE the first buy. Callers hold
-    ledger.ledger_lock and built `broker` inside it."""
+    ledger.ledger_lock and built `broker` (and `held` from it) inside it.
+
+    A set already held can be topped up -- more of the same legs, when the
+    new edge beats the last entry's by TOPUP_MIN_IMPROVEMENT -- since every
+    extra set pays out on its own. A new set that shares a leg with a
+    DIFFERENT held set is still skipped: one ledger position per market
+    can't be split between two sets."""
     tickers = [l.contract.ticker for l in arb.legs]
-    if any(t in held for t in tickers):
-        return False, "already hold a leg"
+    group = arb_group(arb)
+    held_legs = [t for t in tickers if t in held.group_of]
+    if held_legs:
+        if len(held_legs) != len(tickers) or any(held.group_of[t] != group for t in tickers):
+            return False, "a leg is held in a different set"
+        last = held.last_edge.get(group)
+        if last is not None and arb.edge_per_set < last + TOPUP_MIN_IMPROVEMENT:
+            return False, f"already hold this set (entered at {last:.3f}/set)"
+    # Per-market room (max_position_usd): shrink the set to fit rather than half-fill it.
+    position_usd = broker._position_usd_by_ticker()
+    room = min(math.floor((broker.limits.max_position_usd - position_usd.get(l.contract.ticker, 0.0)) / l.price)
+               for l in arb.legs)
+    if room < arb.qty:
+        arb = relations.resize(arb, room)
+        if arb.qty < 1:
+            return False, "per-market position limit reached"
+        if not arb.tradeable:
+            return False, f"after resizing to the per-market limit: {arb.reason}"
     notional = sum(l.price * arb.qty for l in arb.legs)
     if notional + arb.fees_usd > broker.cash_usd:
         return False, "insufficient paper cash for the whole set"
@@ -159,15 +212,111 @@ def execute(arb: relations.Arb, broker: PaperBroker, held: set[str], verdict: di
     if broker.realized_pnl_today_usd <= -broker.limits.max_daily_loss_usd:
         return False, "daily loss limit reached"
 
-    group = f"{arb.kind}:{'|'.join(tickers)}"
+    topup = bool(held_legs)
     for leg in arb.legs:
         fee = None if leg.contract.venue == "kalshi" else leg.contract.fee(arb.qty, leg.price)
         broker.buy(
             leg.contract.ticker, leg.side, leg.price, qty=arb.qty, fee_usd=fee,
-            reason=f"relation arb ({arb.kind}), edge={arb.edge_per_set:.3f}/set",
+            reason=f"relation arb ({arb.kind}){' top-up' if topup else ''}, edge={arb.edge_per_set:.3f}/set",
             strategy=STRATEGY, venue=leg.contract.venue, relation=arb.kind, arb_group=group,
-            payout_per_set=arb.payout_per_set,
+            payout_per_set=arb.payout_per_set, topup=topup,
             edge=arb.edge_per_set, jev_probs=verdict["probs"] if verdict else None,
         )
-        held.add(leg.contract.ticker)
-    return True, "filled"
+        held.group_of[leg.contract.ticker] = group
+    held.last_edge[group] = arb.edge_per_set
+    return True, f"topped up x{arb.qty}" if topup else "filled"
+
+
+# ---- Early exit ------------------------------------------------------------------
+
+# Close a held set early only when selling every leg now beats its
+# guaranteed payout by at least this much per set, after exit fees.
+EXIT_MIN_GAIN = relations.MIN_EDGE
+_TWO_LEG_PAYOUT = {"a_implies_b": 1.0, "b_implies_a": 1.0, "mutually_exclusive": 1.0, "exhaustive": 1.0}
+
+
+@dataclass
+class HeldSet:
+    group: str
+    relation: str | None
+    legs: dict[str, str]  # ticker -> side
+    qty: float
+    payout_per_set: float
+
+
+def held_sets(rows: list[dict]) -> list[HeldSet]:
+    """Every relation-arb set still held whole: all its legs open, in equal
+    quantity, never partly sold. A set with a settled leg drops out at the
+    watcher on its own -- a closed market has no quote to sell into."""
+    positions = ledger.build_positions(rows)
+    by_group: dict[str, list[ledger.Position]] = {}
+    for p in positions.values():
+        g = p.meta.get("arb_group")
+        if p.strategy == STRATEGY and g and p.qty_open > 0:
+            by_group.setdefault(g, []).append(p)
+    out = []
+    for g, legs in by_group.items():
+        tickers = g.split(":", 1)[1].split("|")
+        if sorted(p.ticker for p in legs) != sorted(tickers):
+            continue
+        if any(p.qty_sold or p.qty_open != legs[0].qty_open for p in legs):
+            continue
+        relation = legs[0].meta.get("relation")
+        per_set = legs[0].meta.get("payout_per_set")
+        if per_set is None:
+            per_set = float(len(legs) - 1) if relation == "me_event_overround" else _TWO_LEG_PAYOUT.get(relation)
+        if per_set is None:
+            continue
+        out.append(HeldSet(g, relation, {p.ticker: p.side for p in legs}, legs[0].qty_open, float(per_set)))
+    return out
+
+
+def exit_quote(s: HeldSet, contracts: dict[str, relations.Contract]) -> dict | None:
+    """What selling the whole set now would fetch, or None if any leg can't
+    be sold in full at its best bid. Exit fees use each venue's schedule."""
+    legs, proceeds = [], 0.0
+    for ticker, side in s.legs.items():
+        c = contracts.get(ticker)
+        if c is None:
+            return None
+        if side == "yes":
+            bid, depth = c.yes_bid, c.yes_bid_size
+        else:  # a NO bid is the complement of the YES ask; its depth is the YES ask's
+            bid = round(1 - c.yes_ask, 4) if c.yes_ask is not None else None
+            depth = c.yes_ask_size
+        if not bid or bid <= 0 or depth is None or depth < s.qty:
+            return None
+        fee = c.fee(s.qty, bid)
+        legs.append((c, side, bid, fee))
+        proceeds += bid * s.qty - fee
+    guaranteed = s.payout_per_set * s.qty
+    return {"legs": legs, "proceeds": proceeds, "guaranteed": guaranteed,
+            "gain_per_set": (proceeds - guaranteed) / s.qty}
+
+
+def exit_candidates(sets: list[HeldSet], contracts: dict[str, relations.Contract]) -> list[tuple[HeldSet, dict]]:
+    """Held sets whose sale value beats their guaranteed payout by EXIT_MIN_GAIN/set."""
+    out = []
+    for s in sets:
+        q = exit_quote(s, contracts)
+        if q and q["gain_per_set"] >= EXIT_MIN_GAIN:
+            out.append((s, q))
+    return out
+
+
+def execute_exit(s: HeldSet, q: dict, broker: PaperBroker) -> tuple[bool, str]:
+    """Sell every leg or none. Callers hold ledger.ledger_lock and built
+    `broker` inside it; the set is re-checked against it first."""
+    for ticker, side in s.legs.items():
+        pos = broker.positions.get(ticker)
+        if pos is None or pos["side"] != side or pos["qty"] < s.qty:
+            return False, "set no longer held whole"
+    if broker.limits.kill_switch_path.exists():
+        return False, "kill switch active"
+    for c, side, bid, fee in q["legs"]:
+        broker.sell(
+            c.ticker, bid, qty=s.qty, fee_usd=fee,
+            reason=f"relation arb early exit: sale ${q['proceeds']:.2f} > guaranteed ${q['guaranteed']:.2f}",
+            strategy=STRATEGY, venue=c.venue, relation=s.relation, arb_group=s.group,
+        )
+    return True, f"exited x{s.qty:g} for ${q['proceeds']:.2f} (guaranteed ${q['guaranteed']:.2f})"
