@@ -37,7 +37,8 @@
   "@context": "https://schema.org",
   "@graph": [
     {"@type": "Organization", "@id": "https://pternas.com/#org", "name": "Pternas", "url": "https://pternas.com/",
-     "logo": "https://pternas.com/assets/brand/icon-512.png"},
+     "logo": "https://pternas.com/assets/brand/icon-512.png",
+     "founder": {"@type": "Person", "name": "Shay Kashif", "url": "https://shaykas.com"}},
     {"@type": "WebSite", "@id": "https://pternas.com/#site", "name": "Pternas", "url": "https://pternas.com/",
      "description": "Prediction market relationship arbitrage: a frontier classification model finds logically linked Kalshi and Polymarket markets, then paper-trades mispricings.", "publisher": {"@id": "https://pternas.com/#org"}},
     {"@type": "WebPage", "@id": "https://pternas.com/#page", "url": "https://pternas.com/",
@@ -65,7 +66,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/assets/app.css?v=16">
+<link rel="stylesheet" href="/assets/app.css?v=17">
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 </head>
 <body>
@@ -180,7 +181,7 @@
       <div class="ledger thirds" data-reveal>
         <div class="cell step">
           <span class="cell-title">01 &middot; Classify</span>
-          <h3>How two markets relate</h3>
+          <h3>Relationship Analysis</h3>
           <p>Pternas cross-compares thousands of cultural and economic events on Kalshi and Polymarket. For each pair, a frontier classification model reads both markets' full resolution rules and returns a probability for each relationship: A implies B, B implies A, mutually exclusive, or exhaustive.</p>
         </div>
         <div class="cell step">
@@ -189,13 +190,13 @@
           <p>Because the output is a calculated probability rather than an LLM's free text, each judgment can be calibrated with thresholds, tuned against hand-labeled pairs and required to hold in both orders, which can make it reliable enough to act on without human review.</p>
         </div>
         <div class="cell step">
-          <span class="cell-title">03 &middot; Trade on paper</span>
-          <h3>Re-priced every three seconds</h3>
-          <p>Once a relationship is confirmed, Pternas re-prices the pair every three seconds and paper-trades any price that violates it, buying every leg of the position or none. No real orders are ever placed.</p>
+          <span class="cell-title">03 &middot; Trade</span>
+          <h3>Re-priced live</h3>
+          <p>Once a relationship is confirmed, Pternas re-prices the pair live, the moment either market moves, and paper-trades any price that violates it, buying every leg of the position or none. No real orders are ever placed.</p>
         </div>
         <div class="cell step wide">
           <span class="cell-title">Why a classifier</span>
-          <h3>Logic, not matching titles</h3>
+          <h3>Logical relationships over deterministic analysis</h3>
           <p>Most cross-market arbitrage models match similar market titles deterministically. Pternas judges how markets are logically related instead, in about 0.3 seconds per pair, run in parallel across many pairs, so it can screen thousands of pairs a rules-based matcher would never connect. An LLM can take several seconds per judgment.</p>
         </div>
       </div>
@@ -203,7 +204,7 @@
   </main>
 
   <footer>
-    <span>PTERNAS</span>
+    <span>&copy; 2026 PTERNAS &middot; Pternas is a <a href="https://shaykas.com" rel="author">Shay Kashif</a> production</span>
     <div class="toggle" role="group" aria-label="Color theme">
       <button type="button" data-theme-set="light" aria-pressed="false">Light</button>
       <button type="button" data-theme-set="dark" aria-pressed="false">Dark</button>

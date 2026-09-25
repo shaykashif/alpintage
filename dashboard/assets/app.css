@@ -225,6 +225,8 @@ footer {
   display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap;
   font-family: var(--mono); font-size: 11px; color: var(--ink-3); letter-spacing: 0.04em;
 }
+footer a { color: var(--ink-2); text-decoration: underline; text-underline-offset: 2px; }
+footer a:hover { color: var(--accent); }
 
 /* Reveal-on-load targets start hidden only when motion is allowed and JS runs. */
 /* First-load draw-in (app.js drawIn): until a group is drawn, its rules are
