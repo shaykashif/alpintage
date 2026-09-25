@@ -201,6 +201,8 @@ function book(d) {
     total: t.total_pnl ?? 0, realized: t.realized_pnl ?? 0, unrealized: t.unrealized_pnl ?? 0, capital: t.open_cost ?? 0,
     open: t.open_count ?? 0, closed: t.closed_count ?? 0, wins: t.wins ?? 0,
     positions: (s.positions || []).filter((p) => p.strategy === STRATEGY),
+    // Everything this strategy has paid into positions (open and closed): the base for the hero's return %.
+    deployed: (s.positions || []).filter((p) => p.strategy === STRATEGY).reduce((a, p) => a + (p.cost || 0), 0),
     sets: s.arb_sets || [],
     scoredAt: s.generated_at,
   };
@@ -247,6 +249,7 @@ function setHeroMode(mode) {
   $("lcd-unit").textContent = labels[0];
   labels.slice(1).forEach((t, i) => ($(`h-k${i}`).textContent = t));
   $("pnl-sign").hidden = mode === "comparisons";
+  $("pnl-pct").hidden = mode === "comparisons";
   $("pnl-lcd").setAttribute("aria-label", mode === "comparisons" ? "market pairs compared" : "total PnL");
   lcd.decimals = mode === "comparisons" ? 0 : 2;
   ["lcd", "h-realized", "h-unrealized", "h-capital"].forEach((k) => shown.delete(k)); // don't tween across units
@@ -290,6 +293,16 @@ function renderPnlHero(b) {
   shown.set("lcd", b.total);
   if (reduce) lcd.render(b.total);
   else { const o = { v: from }; animate(o, { v: b.total, duration: 1400, ease: "outExpo", onUpdate: () => lcd.render(o.v) }); }
+
+  // Return on capital deployed: total PnL over everything paid into positions.
+  const ret = b.deployed > 0 ? b.total / b.deployed : null;
+  const pctEl = $("pnl-pct");
+  pctEl.hidden = ret === null;
+  if (ret !== null) {
+    pctEl.textContent = (ret > 0 ? "+" : ret < 0 ? MINUS : "±") + Math.abs(ret * 100).toFixed(2) + "%";
+    pctEl.className = "lcd-pct num " + signClass(ret);
+    pctEl.title = `Return on ${usd(b.deployed, false)} deployed`;
+  }
 
   countTo($("h-realized"), b.realized, usd);
   countTo($("h-unrealized"), b.unrealized, usd);

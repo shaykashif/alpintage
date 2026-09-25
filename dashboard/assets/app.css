@@ -110,7 +110,9 @@ a { color: inherit; }
 .lcd svg.digit path.on { stroke: var(--ink); }
 .lcd svg.digit path.off { stroke: var(--seg-off); }
 .lcd .dp { width: 7px; height: 7px; background: var(--ink); margin: 0 3px 3px; }
-.lcd-unit { font-family: var(--mono); font-size: 12px; color: var(--ink-3); padding-bottom: 6px; letter-spacing: 0.06em; }
+.lcd-unit { font-family: var(--mono); font-size: 12px; color: var(--ink-3); letter-spacing: 0.06em; }
+.lcd-meta { display: flex; flex-direction: column; gap: 4px; padding-bottom: 6px; }
+.lcd-pct { font-family: var(--mono); font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; padding: 2px 7px; border: 1px solid currentColor; align-self: flex-start; }
 .hero-stats { display: grid; grid-template-columns: repeat(3, auto); gap: 8px 32px; margin-top: 28px; justify-content: start; }
 .kv .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
 .kv .v { font-family: var(--mono); font-size: 18px; font-variant-numeric: tabular-nums; margin-top: 2px; }
