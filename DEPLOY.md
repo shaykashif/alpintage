@@ -68,7 +68,7 @@ Then set up the domain (section "Custom domain" below) and visit
 
 ## What's actually running
 
-- **`kalshi-loop.service`** -- `scripts/run_loop.py`, every 30 minutes: the
+- **`kalshi-loop.service`** -- `scripts/run_loop.py`, every 10 minutes: the
   relationship-arbitrage scanner (the only strategy that paper-trades by
   default), the ladder/bracket and sports scanners (scan + log only), and
   scoring. All paper. Logs to `data/*.jsonl` and `data/loop.log`. Each

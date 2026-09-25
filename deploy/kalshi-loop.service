@@ -7,7 +7,10 @@ Wants=network-online.target
 Type=simple
 # Set to the actual clone path if it differs.
 WorkingDirectory=/opt/alpintage
-ExecStart=/opt/alpintage/.venv/bin/python scripts/run_loop.py --interval-min 30
+# Relation discovery every ~10 min (plus the cycle itself, ~1-3 min). The
+# sports cross-venue model spends Odds API quota, so it stays at every 18
+# cycles = ~3 hours.
+ExecStart=/opt/alpintage/.venv/bin/python scripts/run_loop.py --interval-min 10 --cross-venue-every 18
 Restart=on-failure
 RestartSec=30
 EnvironmentFile=/opt/alpintage/.env
