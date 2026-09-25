@@ -24,8 +24,8 @@ def C(ticker, bid, ask, event=None, title="", venue="kalshi", bid_size=1000.0, a
 
 
 def _limits(tmp_path, **kw):
-    d = dict(max_order_notional_usd=10.0, max_position_usd=25.0, max_total_exposure_usd=100.0,
-             max_daily_loss_usd=20.0, kill_switch_path=tmp_path / "KILL_SWITCH")
+    d = dict(max_order_notional_usd=100.0, max_position_usd=100.0, max_total_exposure_usd=1000.0,
+             max_daily_loss_usd=200.0, kill_switch_path=tmp_path / "KILL_SWITCH")
     d.update(kw)
     return RiskLimits(**d)
 
@@ -59,7 +59,7 @@ def test_implication_violation_is_priced_as_an_arb():
     arb = relations.relation_arb("a_implies_b", a, b)
     assert [(l.side, l.price) for l in arb.legs] == [("no", 0.40), ("yes", 0.50)]
     assert arb.tradeable and arb.edge_per_set > 0.05
-    assert arb.qty == 20  # $10 notional cap / $0.50 leg
+    assert arb.qty == 200  # $100 notional cap / $0.50 leg
 
 
 def test_consistent_prices_are_not_an_arb():
@@ -196,7 +196,7 @@ def test_execute_buys_every_leg_with_tags_and_venue_fees(tmp_path):
     rows = ledger.load_rows(tmp_path / "f.jsonl")
     assert {r["strategy"] for r in rows} == {"relation_arb"}
     pm_row = next(r for r in rows if r["ticker"] == "PM-b")
-    assert pm_row["fee_usd"] == pytest.approx(0.05 * 20 * 0.5 * 0.5)  # Polymarket's fee, not Kalshi's
+    assert pm_row["fee_usd"] == pytest.approx(0.05 * 200 * 0.5 * 0.5)  # Polymarket's fee, not Kalshi's
 
 
 def test_execute_buys_nothing_if_the_whole_set_would_breach_exposure(tmp_path):

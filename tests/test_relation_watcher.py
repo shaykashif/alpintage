@@ -23,8 +23,8 @@ def _setup(tmp_path, monkeypatch, quotes_by_tick):
     ticks = iter(quotes_by_tick)
     arbs: list[dict] = []
     fills = tmp_path / "fills.jsonl"
-    limits = RiskLimits(max_order_notional_usd=10.0, max_position_usd=25.0, max_total_exposure_usd=100.0,
-                        max_daily_loss_usd=20.0, kill_switch_path=tmp_path / "KILL_SWITCH")
+    limits = RiskLimits(max_order_notional_usd=100.0, max_position_usd=100.0, max_total_exposure_usd=1000.0,
+                        max_daily_loss_usd=200.0, kill_switch_path=tmp_path / "KILL_SWITCH")
     real_lock = ledger.ledger_lock
     monkeypatch.setattr(rrw, "fetch_quotes", lambda contracts, client: next(ticks))
     monkeypatch.setattr(rrw, "LIVE_PATH", tmp_path / "live.json")

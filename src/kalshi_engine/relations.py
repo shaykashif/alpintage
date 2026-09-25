@@ -291,7 +291,7 @@ def _evaluate(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg
     return arb
 
 
-def relation_arb(relation: str, a: Contract, b: Contract, max_notional_per_leg: float = 10.0, max_qty: int = 500) -> Arb | None:
+def relation_arb(relation: str, a: Contract, b: Contract, max_notional_per_leg: float = 100.0, max_qty: int = 500) -> Arb | None:
     """The two-leg arbitrage implied by `relation`, priced at the current
     asks. None if a leg has no ask at all."""
     side_a, side_b = _LEGS[relation]
@@ -314,7 +314,7 @@ def missing_quotes(relation: str, a: Contract, b: Contract) -> list[str]:
     return out
 
 
-def me_event_arb(contracts: list[Contract], max_notional_per_leg: float = 10.0, max_qty: int = 500) -> Arb | None:
+def me_event_arb(contracts: list[Contract], max_notional_per_leg: float = 100.0, max_qty: int = 500) -> Arb | None:
     """Kalshi says at most one market in this event resolves YES, so NO on
     all n of them pays at least n - 1. If those NOs cost less (after fees),
     that's an arbitrage -- no Jev needed, the exchange asserted the
