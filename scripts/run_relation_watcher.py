@@ -131,15 +131,26 @@ def tick(pairs: list[dict], client: httpx.Client, open_signals: set[str], paper:
 
 def price_and_trade(pairs: list[dict], contracts: list[relations.Contract], quotes: dict[str, Quote],
                     errors: list[str], open_signals: set[str], paper: bool, extra: dict | None = None,
-                    write: bool = True) -> tuple[dict, list[str]]:
-    """Apply `quotes`, re-price every relation, log (and with `paper`, buy)
-    each violation once when it appears, and write relation_live.json."""
+                    write: bool = True, dirty: set[str] | None = None,
+                    memo: dict[int, tuple[dict, list]] | None = None) -> tuple[dict, list[str]]:
+    """Apply `quotes`, re-price the relations, log (and with `paper`, buy)
+    each violation once when it appears, and write relation_live.json.
+
+    With `memo` (pair index -> last (row, violations)) and `dirty` (tickers
+    whose book moved since), only pairs touching a dirty ticker are
+    re-priced -- the family rules put thousands of pairs on the watchlist,
+    and re-pricing all of them on every book update would pin the VM."""
     apply_quotes(contracts, quotes)
     rows, violations = [], []
-    for p in pairs:
-        priced = price_relations(p["a"], p["b"], p["relations"])
-        rows.append(live_row(p, priced))
-        violations += [(arb, p["verdict"]) for arb in priced["arbs"] if arb.edge_per_set > 0]
+    for i, p in enumerate(pairs):
+        cached = memo.get(i) if memo is not None and dirty is not None else None
+        if cached is None or p["a"].ticker in dirty or p["b"].ticker in dirty:
+            priced = price_relations(p["a"], p["b"], p["relations"])
+            cached = (live_row(p, priced), [(arb, p["verdict"]) for arb in priced["arbs"] if arb.edge_per_set > 0])
+            if memo is not None:
+                memo[i] = cached
+        rows.append(cached[0])
+        violations += cached[1]
 
     # A violation is logged (and traded) once when it appears, keyed on its
     # legs and prices -- a persisting one would otherwise log every tick.
@@ -231,6 +242,7 @@ class StreamState:
         self.pairs: list[dict] = []
         self.generation = 0  # bumped when the watchlist changes: feeds resubscribe
         self.changed = asyncio.Event()  # a watched book moved
+        self.dirty: set[str] = set()  # tickers whose quotes changed since the last pricing pass
         self.feed: dict[str, str] = {"kalshi": "starting", "polymarket": "starting"}
 
     def tickers(self, venue: str) -> list[str]:
@@ -261,11 +273,13 @@ async def _feed_forever(state: StreamState, venue: str, connect_once) -> None:
             state.feed[venue] = f"down ({type(exc).__name__}: {exc})"[:160]
             print(f"[{_now()}] {venue} feed {state.feed[venue]} -- retrying in {backoff:.0f}s", flush=True)
             state.books.clear_venue(venue)
+            state.dirty.update(state.tickers(venue))
             state.changed.set()
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, BACKOFF_MAX_S)
             continue
         state.books.clear_venue(venue)
+        state.dirty.update(state.tickers(venue))
         state.changed.set()
 
 
@@ -283,8 +297,10 @@ async def kalshi_feed(state: StreamState, key_id: str, key_path: str) -> None:
                     raw = await asyncio.wait_for(ws.recv(), timeout=1.0)
                 except asyncio.TimeoutError:
                     continue
-                if state.books.apply_kalshi(json.loads(raw)):
+                ticker = state.books.apply_kalshi(json.loads(raw))
+                if ticker:
                     got = True
+                    state.dirty.add(ticker)
                     state.changed.set()
         return got
 
@@ -306,6 +322,7 @@ async def kalshi_poll(state: StreamState, interval_s: float) -> None:
                 state.polled = {}
                 state.feed["kalshi"] = f"down ({exc})"[:160]
                 backoff = min(backoff * 2, BACKOFF_MAX_S)
+            state.dirty.update(tickers)
             state.changed.set()
         else:
             state.feed["kalshi"] = "idle"
@@ -338,8 +355,10 @@ async def polymarket_feed(state: StreamState) -> None:
                     continue
                 body = json.loads(raw)
                 for event in body if isinstance(body, list) else [body]:
-                    if state.books.apply_polymarket(event):
+                    changed = state.books.apply_polymarket(event)
+                    if changed:
                         got = True
+                        state.dirty.update(changed)
                         state.changed.set()
         return got
 
@@ -352,6 +371,7 @@ async def pricer(state: StreamState, paper: bool) -> None:
     open_signals: set[str] = set()
     watch_mtime: float | None = -1.0
     last_write = 0.0
+    memo: dict[int, tuple[dict, list]] = {}
     while True:
         with contextlib.suppress(asyncio.TimeoutError):
             await asyncio.wait_for(state.changed.wait(), timeout=1.0)
@@ -365,6 +385,7 @@ async def pricer(state: StreamState, paper: bool) -> None:
             state.pairs, watch_mtime = load_watchlist(), mtime
             state.generation += 1
             open_signals.clear()
+            memo.clear()  # pair indices changed: price everything afresh
             print(f"[{_now()}] watchlist: {len(state.pairs)} confirmed relation(s)", flush=True)
 
         now = time.monotonic()
@@ -375,15 +396,17 @@ async def pricer(state: StreamState, paper: bool) -> None:
             continue
 
         quotes = {**state.polled, **state.books.quotes()}
+        dirty, state.dirty = state.dirty, set()
         errors = [f"{v}: {s}" for v, s in state.feed.items() if s.startswith("down")]
         write = now - last_write >= LIVE_WRITE_S
         try:
             _, logged = await asyncio.to_thread(
                 price_and_trade, state.pairs, unique_contracts(state.pairs), quotes, errors, open_signals, paper,
-                {"mode": "stream", "feeds": dict(state.feed)}, write)
+                {"mode": "stream", "feeds": dict(state.feed)}, write, dirty, memo)
         except Exception as exc:  # noqa: BLE001 -- e.g. ledger lock timeout: re-evaluate next pass
             print(f"[{_now()}] pricing failed: {exc}", flush=True)
             open_signals.clear()
+            memo.clear()  # this pass's dirty tickers are gone: price everything next time
             logged = []
         if write:
             last_write = now

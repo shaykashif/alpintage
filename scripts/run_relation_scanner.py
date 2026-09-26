@@ -61,6 +61,7 @@ from kalshi_engine.relation_sources import (  # noqa: E402
     fetch_kalshi_events, fetch_polymarket_events, kalshi_contracts, polymarket_contracts, topic_subjects,
 )
 from kalshi_engine.topics import TopicClassifier  # noqa: E402
+from kalshi_engine import structural  # noqa: E402
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 CACHE_PATH = DATA / "relations_cache.jsonl"
@@ -247,17 +248,49 @@ def main() -> None:
     pairs = relations.candidate_pairs(contracts, max_pairs=args.max_pairs)
     print(f"{len(pairs)} candidate pair(s) by shared title words")
 
-    cache = classify_pairs(pairs, load_cache(), args.max_new_pairs, args.workers)
+    # Families the rules read exactly (structural.py): their verdicts replace
+    # Jev's, and they bring pairs the title-word matcher's per-event cap drops.
+    rule_verdicts: dict[str, structural.Verdict] = {}
+    for a, b, _ in pairs:
+        v = structural.judge(a, b)
+        if v:
+            rule_verdicts[relations.pair_key(a, b)] = v
+    seen = {relations.pair_key(a, b) for a, b, _ in pairs}
+    for a, b in structural.family_pairs(contracts):
+        k = relations.pair_key(a, b)
+        if k not in seen:
+            seen.add(k)
+            pairs.append((a, b, 0.0))
+            rule_verdicts[k] = structural.judge(a, b)
+    by_family: dict[str, int] = {}
+    for v in rule_verdicts.values():
+        by_family[v.family] = by_family.get(v.family, 0) + bool(v.relations)
+    print(f"{len(rule_verdicts)} pair(s) judged by family rules ({by_family} with a relation); the rest go to Jev")
+
+    cache = classify_pairs([p for p in pairs if relations.pair_key(p[0], p[1]) not in rule_verdicts],
+                           load_cache(), args.max_new_pairs, args.workers)
 
     opportunities: list[tuple[relations.Arb, dict | None]] = []
     comparisons: list[dict] = []
     watch: list[tuple[relations.Contract, relations.Contract, list[str], dict]] = []
     confirmed = near_miss = inconsistent = 0
     for a, b, _score in pairs:
-        verdict = cache.get(relations.pair_key(a, b))
-        if not verdict or verdict.get("route") != "typesafe":
-            continue
-        rels, why_not = verdict_relations(verdict, args.threshold, args.gate_threshold, args.implication_gate_threshold)
+        key = relations.pair_key(a, b)
+        rule = rule_verdicts.get(key)
+        if rule:
+            rels = rule.relations
+            why_not = None if rels else f"rule ({rule.family}): {rule.note}"
+            verdict = {"probs": {**{r: float(r in rels) for r in relations.RELATIONS}, "same_underlying": 1.0},
+                       "route": "rules", "family": rule.family,
+                       "asked_at": (cache.get(key) or {}).get("asked_at")}
+        else:
+            verdict = cache.get(key)
+            if not verdict or verdict.get("route") != "typesafe":
+                continue
+            rels, why_not = verdict_relations(verdict, args.threshold, args.gate_threshold, args.implication_gate_threshold)
+            rels, vetoed = structural.restrict(a, b, rels)
+            why_not = vetoed or why_not
+            verdict = {**verdict, "family": "jev"}
         if why_not and why_not.startswith("inconsistent"):
             inconsistent += 1
         row, arbs = comparison_row(a, b, verdict, rels, why_not)

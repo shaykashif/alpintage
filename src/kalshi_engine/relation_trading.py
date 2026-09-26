@@ -75,8 +75,8 @@ def write_watchlist(entries: list[tuple[relations.Contract, relations.Contract, 
     """Every Jev-confirmed pair from the latest scan: (a, b, relations, verdict)."""
     write_json_atomic(path, {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "pairs": [{"a": _contract_dict(a), "b": _contract_dict(b), "relations": rels, "probs": v.get("probs")}
-                  for a, b, rels, v in entries],
+        "pairs": [{"a": _contract_dict(a), "b": _contract_dict(b), "relations": rels, "probs": v.get("probs"),
+                   "family": v.get("family")} for a, b, rels, v in entries],
     })
 
 
@@ -97,7 +97,7 @@ def load_watchlist(path: Path = WATCHLIST_PATH) -> list[dict]:
         return c
 
     return [{"a": contract(p["a"]), "b": contract(p["b"]), "relations": p["relations"],
-             "verdict": {"probs": p.get("probs")}} for p in body.get("pairs", [])]
+             "verdict": {"probs": p.get("probs"), "family": p.get("family")}} for p in body.get("pairs", [])]
 
 
 # ---- Trading -------------------------------------------------------------------
@@ -117,6 +117,8 @@ def arb_row(arb: relations.Arb, verdict: dict | None, source: str = "scan") -> d
         "tradeable": arb.tradeable,
         "reason": arb.reason,
         "jev_probs": verdict["probs"] if verdict else None,
+        # Which judged the relation: a structural.py family, "jev", or None (Kalshi ME-event check).
+        "family": verdict.get("family") if verdict else None,
         "traded": False,
     }
 

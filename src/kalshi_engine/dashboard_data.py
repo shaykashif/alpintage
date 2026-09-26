@@ -260,7 +260,31 @@ def relation_live() -> dict:
         age = None
     live["age_s"] = age
     live["running"] = age is not None and age <= LIVE_STALE_S
+    # The watchlist can hold thousands of pairs (structural.py families); the
+    # page only overlays the comparisons it shows, so ship just those rows
+    # (plus any live violation) instead of ~1 MB every few seconds.
+    shown = _comparison_ids()
+    live["rows"] = [r for r in live.get("rows", []) if r.get("status") == "violation" or r.get("id") in shown]
     return live
+
+
+_comparison_cache: dict = {"mtime": None, "ids": set()}
+
+
+def _comparison_ids() -> set[str]:
+    path = DATA_DIR / "relation_comparisons.json"
+    try:
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        return set()
+    if mtime != _comparison_cache["mtime"]:
+        try:
+            rows = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
+        except json.JSONDecodeError:
+            return _comparison_cache["ids"]
+        _comparison_cache["ids"] = {f"{r['a']['ticker']}|{r['b']['ticker']}" for r in rows}
+        _comparison_cache["mtime"] = mtime
+    return _comparison_cache["ids"]
 
 
 def loop_health() -> dict:

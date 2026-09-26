@@ -104,3 +104,21 @@ def test_ledger_lock_is_exclusive_and_breaks_stale_locks(tmp_path):
     os.utime(lock, (0, 0))
     with ledger.ledger_lock(lock, timeout_s=0.1, stale_s=1.0):
         pass
+
+
+def test_only_pairs_touching_a_moved_market_are_repriced(tmp_path, monkeypatch):
+    monkeypatch.setattr(rrw, "LIVE_PATH", tmp_path / "live.json")
+    a, b, c, d = C("A"), C("B"), C("C"), C("D")
+    rt.write_watchlist([(a, b, ["mutually_exclusive"], {}), (c, d, ["mutually_exclusive"], {})], tmp_path / "w.json")
+    pairs = rt.load_watchlist(tmp_path / "w.json")
+    contracts = rrw.unique_contracts(pairs)
+    calls = []
+    real = rrw.price_relations
+    monkeypatch.setattr(rrw, "price_relations", lambda x, y, r: calls.append(x.ticker) or real(x, y, r))
+    quotes = {t: Quote(0.40, 0.42, 10, 10) for t in "ABCD"}
+    memo: dict = {}
+    rrw.price_and_trade(pairs, contracts, quotes, [], set(), False, dirty=set(), memo=memo)
+    assert sorted(calls) == ["A", "C"]  # first pass prices everything
+    calls.clear()
+    live, _ = rrw.price_and_trade(pairs, contracts, quotes, [], set(), False, dirty={"D"}, memo=memo)
+    assert calls == ["C"] and len(live["rows"]) == 2  # only the C/D pair; A/B reused
