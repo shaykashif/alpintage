@@ -26,7 +26,7 @@ import base64
 import time
 from pathlib import Path
 
-from .relation_sources import Quote
+from .relation_sources import BOOK_DEPTH, Quote
 
 
 class SeqGap(Exception):
@@ -132,20 +132,24 @@ class LiveBooks:
             self._poly.clear()
 
     def quotes(self) -> dict[str, Quote]:
+        """Top of book plus BOOK_DEPTH levels per side (YES bids descending,
+        YES asks ascending) -- the depth relations._walk buys down."""
         out: dict[str, Quote] = {}
         for ticker, b in self._kalshi.items():
-            bid = max(b.bids, default=None)
-            no_bid = max(b.asks, default=None)
-            out[ticker] = Quote(
-                bid, round(1 - no_bid, 4) if no_bid is not None else None,
-                b.bids[bid] if bid is not None else None, b.asks[no_bid] if no_bid is not None else None,
-            )
+            bid_lv = [[p, b.bids[p]] for p in sorted(b.bids, reverse=True)[:BOOK_DEPTH]]
+            ask_lv = [[round(1 - p, 4), b.asks[p]] for p in sorted(b.asks, reverse=True)[:BOOK_DEPTH]]  # NO bids -> YES asks
+            out[ticker] = self._quote(bid_lv, ask_lv)
         for ticker, b in self._poly.items():
-            bid = max(b.bids, default=None)
-            ask = min(b.asks, default=None)
-            out[ticker] = Quote(bid, ask, b.bids[bid] if bid is not None else None,
-                                b.asks[ask] if ask is not None else None)
+            bid_lv = [[p, b.bids[p]] for p in sorted(b.bids, reverse=True)[:BOOK_DEPTH]]
+            ask_lv = [[p, b.asks[p]] for p in sorted(b.asks)[:BOOK_DEPTH]]
+            out[ticker] = self._quote(bid_lv, ask_lv)
         return out
+
+    @staticmethod
+    def _quote(bid_lv: list, ask_lv: list) -> Quote:
+        return Quote(bid_lv[0][0] if bid_lv else None, ask_lv[0][0] if ask_lv else None,
+                     bid_lv[0][1] if bid_lv else None, ask_lv[0][1] if ask_lv else None,
+                     bid_lv or None, ask_lv or None)
 
 
 def kalshi_ws_headers(key_id: str, key_path: str | Path, path: str = "/trade-api/ws/v2") -> dict[str, str]:

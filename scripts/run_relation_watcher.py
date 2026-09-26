@@ -88,6 +88,7 @@ def apply_quotes(contracts: list[relations.Contract], quotes: dict[str, Quote]) 
         q = quotes.get(c.ticker)
         c.yes_bid, c.yes_ask = (q.yes_bid, q.yes_ask) if q else (None, None)
         c.yes_bid_size, c.yes_ask_size = (q.yes_bid_size, q.yes_ask_size) if q else (None, None)
+        c.yes_bid_levels, c.yes_ask_levels = (q.bid_levels, q.ask_levels) if q else (None, None)
 
 
 def fetch_quotes(contracts: list[relations.Contract], client: httpx.Client) -> tuple[dict[str, Quote], list[str]]:

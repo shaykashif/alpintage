@@ -211,6 +211,11 @@ class Contract:
     fee_exponent: float = 1.0
     topic: str | None = None  # "cultural" | "economic" | "geopolitical" (topics.py)
     settlement: str | None = None  # "venue|source|time" (relation_sources.*_settlement); None = unknown
+    # Order-book depth beyond the best price, best first: YES bids (price
+    # descending) and YES asks (price ascending) as [price, size]. Set by the
+    # watcher from live books; None = only the top of book is known.
+    yes_bid_levels: list | None = None
+    yes_ask_levels: list | None = None
 
     def ask(self, side: str) -> float | None:
         """Price to BUY `side`. A NO ask is the complement of the YES bid."""
@@ -223,6 +228,26 @@ class Contract:
     def size(self, side: str) -> float | None:
         """Contracts available at that ask (None = venue doesn't say)."""
         return self.yes_ask_size if side == "yes" else self.yes_bid_size
+
+    def levels(self, side: str) -> list[tuple[float, float]]:
+        """Prices (ascending) and sizes to BUY `side`, walking the book. A NO
+        level is the complement of a YES bid level. Falls back to the top of
+        book (size unknown = unlimited, as before) without depth."""
+        if side == "yes" and self.yes_ask_levels:
+            return [(float(p), float(s)) for p, s in self.yes_ask_levels if 0 < float(p) < 1]
+        if side == "no" and self.yes_bid_levels:
+            return [(round(1 - float(p), 4), float(s)) for p, s in self.yes_bid_levels if 0 < float(p) < 1]
+        top = self.ask(side)
+        if top is None:
+            return []
+        size = self.size(side)
+        return [(top, float("inf") if size is None else float(size))]
+
+    def marginal_fee(self, price: float) -> float:
+        """Fee per contract at `price`, before any rounding."""
+        if self.venue == "kalshi":
+            return 0.07 * price * (1 - price)
+        return self.fee_rate * (price * (1 - price)) ** self.fee_exponent
 
     def fee(self, qty: float, price: float) -> float:
         if self.venue == "kalshi":
@@ -242,7 +267,9 @@ class Contract:
 class ArbLeg:
     contract: Contract
     side: str
-    price: float
+    price: float  # average price paid when the leg walks several levels
+    fee: float | None = None  # exact fee across those levels (None: computed from qty and price)
+    fills: list | None = None  # [(price, qty)] per level, when walked
 
 
 @dataclass
@@ -310,7 +337,60 @@ def _size_qty(legs: list[ArbLeg], max_notional_per_leg: float, max_qty: int) -> 
     return max(qty, 0)
 
 
+def _walk(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg: float, max_qty: int) -> Arb | None:
+    """Buy the set down every leg's book while the NEXT set still clears
+    MIN_EDGE after fees at the prices it would be filled at -- not just the
+    contracts resting at the best price. None when not even one set clears
+    it (the caller then reports the top-of-book arb, as before)."""
+    books = [leg.contract.levels(leg.side) for leg in legs]
+    if any(not b for b in books):
+        return None
+    n = len(legs)
+    pos = [0] * n
+    left = [b[0][1] for b in books]
+    spent = [0.0] * n
+    fills: list[dict[float, float]] = [{} for _ in legs]
+    qty = 0
+    while qty < max_qty and all(pos[i] < len(books[i]) for i in range(n)):
+        prices = [books[i][pos[i]][0] for i in range(n)]
+        if payout - sum(p + leg.contract.marginal_fee(p) for p, leg in zip(prices, legs)) <= MIN_EDGE:
+            break
+        room = [math.floor((max_notional_per_leg - spent[i]) / prices[i]) for i in range(n)]
+        depth = [max_qty if left[i] == float("inf") else math.floor(left[i]) for i in range(n)]
+        step = min(max_qty - qty, *room, *depth)
+        if step < 1:
+            break
+        for i in range(n):
+            fills[i][prices[i]] = fills[i].get(prices[i], 0) + step
+            spent[i] += prices[i] * step
+            left[i] -= step
+            if left[i] < 1:  # this level is used up: move down the book
+                pos[i] += 1
+                if pos[i] < len(books[i]):
+                    left[i] = books[i][pos[i]][1]
+        qty += step
+    if qty < 1:
+        return None
+    walked = [ArbLeg(leg.contract, leg.side, round(sum(p * q for p, q in fl.items()) / qty, 6),
+                     round(sum(leg.contract.fee(q, p) for p, q in fl.items()), 4), sorted(fl.items()))
+              for leg, fl in zip(legs, fills)]
+    fees = sum(l.fee for l in walked)
+    cost = sum(l.price for l in walked) + fees / qty
+    return Arb(kind, walked, qty, payout, round(cost, 4), round(payout - cost, 4), round(fees, 4))
+
+
 def _evaluate(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg: float, max_qty: int) -> Arb:
+    walked = _walk(kind, legs, payout, max_notional_per_leg, max_qty)
+    if walked is not None and any(len(l.fills) > 1 for l in walked.legs):
+        # Depth past the best price was used: keep the walked set.
+        cap = plausible_edge_cap(walked.legs)
+        if walked.edge_per_set <= MIN_EDGE:
+            walked.reason = f"edge {walked.edge_per_set:.4f} <= MIN_EDGE"
+        elif walked.edge_per_set / payout > cap:
+            walked.reason = (f"edge {walked.edge_per_set:.3f} implausibly large"
+                             f"{' even for same-settlement markets' if cap == MAX_PLAUSIBLE_EDGE_SAME_SETTLEMENT else ''}"
+                             " -- relation probably wrong")
+        return walked
     qty = _size_qty(legs, max_notional_per_leg, max_qty)
     if qty < 1:
         # Still report the edge a 1-lot would have AFTER fees, so an

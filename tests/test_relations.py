@@ -404,3 +404,37 @@ def test_partition_arb_buys_yes_on_every_bracket():
     assert arb.edge_per_set == pytest.approx(0.05) and arb.tradeable
     ms[1].yes_ask = None
     assert relations.partition_arb(ms) is None  # a bracket that can't be bought voids the set
+
+
+# --- walking the book -------------------------------------------------------------
+
+def _pm(ticker, bid_levels, ask_levels):
+    c = C(ticker, bid_levels[0][0], ask_levels[0][0], venue="polymarket",
+          bid_size=bid_levels[0][1], ask_size=ask_levels[0][1])  # as live quotes set them: from the top level
+    c.yes_bid_levels, c.yes_ask_levels = bid_levels, ask_levels
+    return c
+
+
+def test_arb_walks_down_both_books_while_the_next_set_still_pays():
+    # Not both: NO A + NO B. NO asks are 1 - YES bids.
+    a = _pm("PM-a", [[0.60, 5], [0.58, 10], [0.50, 100]], [[0.62, 5]])   # NO A: 0.40 x5, 0.42 x10, 0.50 x100
+    b = _pm("PM-b", [[0.55, 8], [0.52, 50]], [[0.57, 8]])                # NO B: 0.45 x8,  0.48 x50
+    arb = relations.relation_arb("mutually_exclusive", a, b)
+    # Sets: 5 @ .40+.45, 3 @ .42+.45, 7 @ .42+.48 (=.90), then .50+.48 = .98 still > MIN_EDGE: take it too.
+    fills = {l.contract.ticker: l.fills for l in arb.legs}
+    assert fills["PM-a"][:2] == [(0.4, 5), (0.42, 10)] and fills["PM-b"][0] == (0.45, 8)
+    assert arb.qty > 15 and arb.tradeable
+    assert arb.edge_per_set == pytest.approx(1 - sum(l.price for l in arb.legs), abs=1e-3)  # fee-free venue
+
+
+def test_walk_stops_where_the_next_set_would_lose():
+    a = _pm("PM-a", [[0.60, 5], [0.40, 100]], [[0.62, 5]])  # second NO A level at 0.60
+    b = _pm("PM-b", [[0.55, 5], [0.30, 100]], [[0.57, 5]])  # second NO B level at 0.70
+    arb = relations.relation_arb("mutually_exclusive", a, b)
+    assert arb.qty == 5  # 0.60 + 0.70 > $1: the second level isn't bought
+
+
+def test_without_depth_sizing_is_unchanged():
+    a, b = C("A", 0.60, 0.62, bid_size=7), C("B", 0.55, 0.57, bid_size=9)
+    arb = relations.relation_arb("mutually_exclusive", a, b)
+    assert arb.qty == 7 and all(l.fills is None for l in arb.legs)

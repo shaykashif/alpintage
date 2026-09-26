@@ -294,6 +294,12 @@ class Quote:
     yes_ask: float | None
     yes_bid_size: float | None = None
     yes_ask_size: float | None = None
+    # Depth, best first, [price, size]: YES bids descending, YES asks ascending.
+    bid_levels: list | None = None
+    ask_levels: list | None = None
+
+
+BOOK_DEPTH = 10  # levels kept per side for walking the book (relations._walk)
 
 
 QUOTE_BATCH = 100  # both venues accept ~100 identifiers per request (verified live 2026-09-24)
@@ -345,10 +351,10 @@ def top_of_book(bids: list[dict], asks: list[dict]) -> Quote:
     """Best bid/ask (and the size resting there) from CLOB levels. Level
     order isn't relied on: the REST book lists bids ascending and asks
     descending, the stream makes no promise."""
-    bid = max(bids, key=lambda lv: float(lv["price"]), default=None)
-    ask = min(asks, key=lambda lv: float(lv["price"]), default=None)
-    return Quote(_f(bid["price"]) if bid else None, _f(ask["price"]) if ask else None,
-                 _f(bid["size"]) if bid else None, _f(ask["size"]) if ask else None)
+    bid_lv = sorted(([float(lv["price"]), float(lv["size"])] for lv in bids), reverse=True)[:BOOK_DEPTH]
+    ask_lv = sorted([float(lv["price"]), float(lv["size"])] for lv in asks)[:BOOK_DEPTH]
+    return Quote(bid_lv[0][0] if bid_lv else None, ask_lv[0][0] if ask_lv else None,
+                 bid_lv[0][1] if bid_lv else None, ask_lv[0][1] if ask_lv else None, bid_lv or None, ask_lv or None)
 
 
 def fetch_polymarket_quotes(slugs: list[str]) -> dict[str, Quote]:

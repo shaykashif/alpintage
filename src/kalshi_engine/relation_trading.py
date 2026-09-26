@@ -67,6 +67,7 @@ _CONTRACT_FIELDS = {f.name for f in fields(relations.Contract)}
 def _contract_dict(c: relations.Contract) -> dict:
     d = asdict(c)
     d["context"] = ""  # full rulebooks: only Jev reads them, and the watcher never asks Jev
+    d["yes_bid_levels"] = d["yes_ask_levels"] = None  # live depth: the watcher's books supply it
     return d
 
 
@@ -127,7 +128,7 @@ def arb_row(arb: relations.Arb, verdict: dict | None, source: str = "scan") -> d
         "source": source,  # "scan" (discovery loop) or "watch" (fast pricing loop)
         "kind": arb.kind,
         "legs": [{"venue": l.contract.venue, "ticker": l.contract.ticker, "side": l.side, "price": l.price,
-                  "title": l.contract.title} for l in arb.legs],
+                  "title": l.contract.title, "fills": l.fills} for l in arb.legs],
         "qty": arb.qty,
         "payout_per_set": arb.payout_per_set,
         "cost_per_set": arb.cost_per_set,
@@ -254,7 +255,9 @@ def execute(arb: relations.Arb, broker: PaperBroker, held: HeldBook, verdict: di
         return False, "daily loss limit reached"
 
     for leg in arb.legs:
-        fee = None if leg.contract.venue == "kalshi" else leg.contract.fee(arb.qty, leg.price)
+        # A walked leg carries its exact fee across levels; otherwise Kalshi's
+        # broker default, or the Polymarket schedule at the one price.
+        fee = leg.fee if leg.fee is not None else None if leg.contract.venue == "kalshi" else leg.contract.fee(arb.qty, leg.price)
         broker.buy(
             leg.contract.ticker, leg.side, leg.price, qty=arb.qty, fee_usd=fee,
             reason=f"relation arb ({arb.kind}){' top-up' if topup else ''}, edge={arb.edge_per_set:.3f}/set",
