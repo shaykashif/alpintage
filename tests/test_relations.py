@@ -215,11 +215,22 @@ def test_execute_buys_nothing_if_the_whole_set_would_breach_exposure(tmp_path):
     assert broker.positions == {}  # never half a set
 
 
-def test_execute_refuses_a_market_held_on_the_other_side(tmp_path):
+def test_a_market_can_be_held_on_both_sides_in_different_sets(tmp_path):
     broker = PaperBroker(limits=_limits(tmp_path), log_path=tmp_path / "f.jsonl")
-    held = HeldBook({"A": {"mutually_exclusive:A|OTHER"}}, {"A": "yes"})  # _arb() buys NO A
-    ok, why = rrs.execute(_arb(), broker, held, None)
-    assert not ok and "other side" in why and broker.positions == {}
+    assert rrs.execute(_me_arb(0.20, 0.77, depth=10), broker, HeldBook(), None)[0]  # NO A + NO B
+    # A second set, "at least one" on A and E, buys YES A.
+    a = C("A", 0.70, 0.75, ask_size=10)
+    e = C("E", 0.10, 0.20, ask_size=10)
+    ok, why = rrs.execute(relations.relation_arb("exhaustive", a, e), broker, HeldBook.from_broker(broker), None)
+    assert ok, why
+    assert broker.positions["A"]["side"] == "no" and broker.opposite["A"]["side"] == "yes"
+    assert broker._position_usd_by_ticker()["A"] == pytest.approx(10 * 0.20 + 10 * 0.75)
+    # Replayed from the log, both sides come back apart.
+    again = PaperBroker.from_ledger(limits=_limits(tmp_path), log_path=tmp_path / "f.jsonl")
+    assert again.position("A", "no")["qty"] == 10 and again.position("A", "yes")["qty"] == 10
+    # Selling one side leaves the other.
+    assert again.sell("A", 0.30, side="yes") is not None
+    assert "A" not in again.opposite and again.positions["A"]["side"] == "no"
 
 
 def test_a_new_set_can_share_a_market_with_a_held_set(tmp_path):

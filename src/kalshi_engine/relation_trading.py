@@ -218,15 +218,11 @@ def execute(arb: relations.Arb, broker: PaperBroker, held: HeldBook, verdict: di
     A set already held can be topped up -- more of the same legs, when the
     new edge beats the last entry's by TOPUP_MIN_IMPROVEMENT -- since every
     extra set pays out on its own. A new set may share a market with other
-    held sets (each set is hedged on its own; the scorer and exits track
-    them per set), but only on the SAME side: the broker keeps one position
-    per market, which can't be long YES and NO at once."""
+    held sets, on either side: each set is hedged on its own, the broker
+    books a market's second side apart, and the scorer and exits track
+    positions per set."""
     tickers = [l.contract.ticker for l in arb.legs]
     group = arb_group(arb)
-    for leg in arb.legs:
-        held_side = held.side_of.get(leg.contract.ticker)
-        if held_side is not None and held_side != leg.side:
-            return False, f"{leg.contract.ticker} is held on the other side"
     topup = all(group in held.groups_of.get(t, set()) for t in tickers)
     if topup:
         last = held.last_edge.get(group)
@@ -351,14 +347,14 @@ def execute_exit(s: HeldSet, q: dict, broker: PaperBroker) -> tuple[bool, str]:
     """Sell every leg or none. Callers hold ledger.ledger_lock and built
     `broker` inside it; the set is re-checked against it first."""
     for ticker, side in s.legs.items():
-        pos = broker.positions.get(ticker)
-        if pos is None or pos["side"] != side or pos["qty"] < s.qty:
+        pos = broker.position(ticker, side)
+        if pos is None or pos["qty"] < s.qty:
             return False, "set no longer held whole"
     if broker.limits.kill_switch_path.exists():
         return False, "kill switch active"
     for c, side, bid, fee in q["legs"]:
         broker.sell(
-            c.ticker, bid, qty=s.qty, fee_usd=fee,
+            c.ticker, bid, qty=s.qty, fee_usd=fee, side=side,
             reason=f"relation arb early exit: sale ${q['proceeds']:.2f} > guaranteed ${q['guaranteed']:.2f}",
             strategy=STRATEGY, venue=c.venue, relation=s.relation, arb_group=s.group,
         )

@@ -45,6 +45,10 @@ class PaperBroker:
         self.cash_usd = cash_usd
         self.realized_pnl_today_usd = 0.0
         self.positions: dict[str, dict] = {}  # ticker -> {"side", "qty", "avg_price"}
+        # The other side of a market already in `positions`: relation arbs can
+        # hold YES in one set and NO in another. Kept apart so every caller
+        # that reads positions[ticker] still sees one position per market.
+        self.opposite: dict[str, dict] = {}
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -70,21 +74,34 @@ class PaperBroker:
                 broker.cash_usd -= row.get("cost_usd", 0.0)
             elif row.get("event") == "sell":
                 broker.cash_usd += row.get("proceeds_usd", 0.0)
-        for ticker, pos in ledger.build_positions(rows).items():
+        paid: set[str] = set()
+        for pos in ledger.build_positions(rows, by_side=True).values():
+            ticker = pos.ticker
             if (pos.last_ts or "").startswith(today):
                 broker.realized_pnl_today_usd += pos.realized_pnl_usd
             if ticker in settled:
-                broker.cash_usd += settled[ticker]
+                if ticker not in paid:  # one payout per market, covering both sides
+                    broker.cash_usd += settled[ticker]
+                    paid.add(ticker)
                 continue
             if pos.qty_open > 0:
-                broker.positions[ticker] = {
-                    "side": pos.side, "qty": pos.qty_open,
-                    "avg_price": pos.avg_cost, "avg_cost": pos.avg_cost,
-                }
+                book = broker.positions if ticker not in broker.positions else broker.opposite
+                book[ticker] = {"side": pos.side, "qty": pos.qty_open, "avg_price": pos.avg_cost, "avg_cost": pos.avg_cost}
         return broker
 
+    def position(self, ticker: str, side: str | None = None) -> dict | None:
+        """The open position on `ticker` (on `side`, if given)."""
+        p = self.positions.get(ticker)
+        if side is None or (p and p["side"] == side):
+            return p
+        o = self.opposite.get(ticker)
+        return o if o and o["side"] == side else None
+
     def _position_usd_by_ticker(self) -> dict[str, float]:
-        return {t: p["qty"] * p["avg_price"] for t, p in self.positions.items()}
+        out = {t: p["qty"] * p["avg_price"] for t, p in self.positions.items()}
+        for t, p in self.opposite.items():
+            out[t] = out.get(t, 0.0) + p["qty"] * p["avg_price"]
+        return out
 
     def _total_exposure_usd(self) -> float:
         return sum(self._position_usd_by_ticker().values())
@@ -118,13 +135,14 @@ class PaperBroker:
             return None
 
         self.cash_usd -= cost
-        pos = self.positions.setdefault(ticker, {"side": side, "qty": 0.0, "avg_price": 0.0, "avg_cost": 0.0})
+        held = self.positions.get(ticker)
+        book = self.positions if held is None or held["side"] == side else self.opposite
+        pos = book.setdefault(ticker, {"side": side, "qty": 0.0, "avg_price": 0.0, "avg_cost": 0.0})
         total_qty = pos["qty"] + qty
         pos["avg_price"] = (pos["avg_price"] * pos["qty"] + price * qty) / total_qty
         # Fee-inclusive basis, what realized PnL on an exit is measured against.
         pos["avg_cost"] = (pos.get("avg_cost", pos["avg_price"]) * pos["qty"] + cost) / total_qty
         pos["qty"] = total_qty
-        pos["side"] = side
 
         fill = Fill(
             ticker=ticker, side=side, price=price, qty=qty,
@@ -135,13 +153,13 @@ class PaperBroker:
         return fill
 
     def sell(self, ticker: str, price: float, qty: float | None = None, reason: str = "",
-             fee_usd: float | None = None, **tags) -> Fill | None:
+             fee_usd: float | None = None, side: str | None = None, **tags) -> Fill | None:
         """Simulate selling (closing) `qty` contracts of an open position at
         `price` -- the bid on the held side. Defaults to the whole position.
         Exits are never risk-vetoed (reducing exposure is always allowed),
         but the kill switch still applies, same as for buys. Returns None
         if there's nothing to sell."""
-        pos = self.positions.get(ticker)
+        pos = self.position(ticker, side)  # `side` picks the book when both sides are held
         if pos is None or pos["qty"] <= 0:
             return None
         if self.limits.kill_switch_path.exists():
@@ -157,7 +175,12 @@ class PaperBroker:
         self.realized_pnl_today_usd += pnl
         pos["qty"] = round(pos["qty"] - qty, 6)
         if pos["qty"] <= 0:
-            del self.positions[ticker]
+            if self.opposite.get(ticker) is pos:
+                del self.opposite[ticker]
+            else:  # the other side, if any, becomes the market's position
+                del self.positions[ticker]
+                if ticker in self.opposite:
+                    self.positions[ticker] = self.opposite.pop(ticker)
 
         fill = Fill(
             ticker=ticker, side=pos["side"], price=price, qty=qty,

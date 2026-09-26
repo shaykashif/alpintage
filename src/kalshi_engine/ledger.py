@@ -90,23 +90,29 @@ def venue_of(row: dict) -> str | None:
     return None
 
 
-def position_key(row: dict, by_set: bool) -> str:
-    """The ticker, or with `by_set` "<ticker>@<arb_group>" for a relation-arb
-    row, so one market held in two sets is two positions."""
-    return f"{row['ticker']}@{row['arb_group']}" if by_set and row.get("arb_group") else row["ticker"]
+def position_key(row: dict, by_set: bool, by_side: bool = False) -> str:
+    """The ticker; with `by_set`, "<ticker>@<arb_group>" for a relation-arb
+    row (one market held in two sets is two positions); with `by_side`,
+    "<ticker>|<side>" (a market held on both sides is two positions)."""
+    if by_set and row.get("arb_group"):
+        return f"{row['ticker']}@{row['arb_group']}"
+    if by_side:
+        return f"{row['ticker']}|{row.get('side', 'yes')}"
+    return row["ticker"]
 
 
-def build_positions(rows: list[dict], by_set: bool = False) -> dict[str, Position]:
-    """Positions keyed by ticker (what the broker, cash and risk limits see),
-    or with `by_set` split per relation-arb set (what the scorer, top-ups
-    and early exits need -- a market can be a leg of more than one set)."""
+def build_positions(rows: list[dict], by_set: bool = False, by_side: bool = False) -> dict[str, Position]:
+    """Positions keyed by ticker, or with `by_side` by ticker and side (what
+    the broker, cash and risk limits see -- relation arbs can hold YES in one
+    set and NO in another), or with `by_set` split per relation-arb set
+    (what the scorer, top-ups and early exits need)."""
     positions: dict[str, Position] = {}
     for row in rows:
         event = row.get("event")
         if event not in ("fill", "sell"):
             continue
         ticker = row["ticker"]
-        key = position_key(row, by_set)
+        key = position_key(row, by_set, by_side)
         pos = positions.get(key)
         if pos is None:
             pos = positions[key] = Position(ticker=ticker, side=row.get("side", "yes"), strategy=strategy_of(row))
