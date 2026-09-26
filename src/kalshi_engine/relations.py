@@ -334,19 +334,33 @@ def missing_quotes(relation: str, a: Contract, b: Contract) -> list[str]:
 
 
 def me_event_arb(contracts: list[Contract], max_notional_per_leg: float = 100.0, max_qty: int = 500) -> Arb | None:
-    """Kalshi says at most one market in this event resolves YES, so NO on
-    all n of them pays at least n - 1. If those NOs cost less (after fees),
-    that's an arbitrage -- no Jev needed, the exchange asserted the
-    relation. Every market in the event must be present and quoted."""
+    """The venue says at most one market in this event resolves YES
+    (Kalshi's mutually_exclusive flag, Polymarket's negRisk), so NO on any k
+    of them pays at least k - 1. If those NOs cost less (after fees), that's
+    an arbitrage -- no Jev needed, the exchange asserted the relation. Any
+    subset works, so every market with a NO ask is used; unquoted ones are
+    left out rather than voiding the set."""
     if len(contracts) < 2 or not all(c.event_mutually_exclusive for c in contracts):
+        return None
+    legs = [ArbLeg(c, "no", p) for c in contracts if (p := c.ask("no")) is not None]
+    if len(legs) < 2:
+        return None
+    return _evaluate("me_event_overround", legs, float(len(legs) - 1), max_notional_per_leg, max_qty)
+
+
+def partition_arb(contracts: list[Contract], max_notional_per_leg: float = 100.0, max_qty: int = 500) -> Arb | None:
+    """YES on every market of a set that covers every outcome exactly once
+    (the caller proves that -- structural.covers_all), so the set pays
+    exactly $1. Every market must have a YES ask."""
+    if len(contracts) < 2:
         return None
     legs = []
     for c in contracts:
-        p = c.ask("no")
+        p = c.ask("yes")
         if p is None:
             return None
-        legs.append(ArbLeg(c, "no", p))
-    return _evaluate("me_event_overround", legs, float(len(contracts) - 1), max_notional_per_leg, max_qty)
+        legs.append(ArbLeg(c, "yes", p))
+    return _evaluate("partition_underround", legs, 1.0, max_notional_per_leg, max_qty)
 
 
 # --- Candidate pairs --------------------------------------------------------

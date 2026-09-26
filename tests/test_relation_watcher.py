@@ -122,3 +122,20 @@ def test_only_pairs_touching_a_moved_market_are_repriced(tmp_path, monkeypatch):
     calls.clear()
     live, _ = rrw.price_and_trade(pairs, contracts, quotes, [], set(), False, dirty={"D"}, memo=memo)
     assert calls == ["C"] and len(live["rows"]) == 2  # only the C/D pair; A/B reused
+
+
+def test_watcher_trades_a_winner_take_all_group(tmp_path, monkeypatch):
+    ms = [relations.Contract(venue="polymarket", ticker=f"PM-{t}", event_id="PM-ev", category=None, title=t,
+                             context="", close_time=None, yes_bid=None, yes_ask=None, event_mutually_exclusive=True)
+          for t in ("x", "y", "z")]
+    rt.write_watchlist([], tmp_path / "w.json", groups=[{"kind": "me_event", "event": "PM-ev", "contracts": ms}])
+    pairs, groups = rt.load_watchlist(tmp_path / "w.json", with_groups=True)
+    assert pairs == [] and len(groups) == 1 and len(groups[0]["contracts"]) == 3
+    # NO asks 0.60 + 0.60 + 0.65 = 1.85 for a set paying at least $2.
+    quotes = {"PM-x": Quote(0.40, 0.42, 50, 50), "PM-y": Quote(0.40, 0.42, 50, 50), "PM-z": Quote(0.35, 0.37, 50, 50)}
+    arbs, fills = _setup(tmp_path, monkeypatch, [(quotes, [])])
+    live, logged = rrw.tick(pairs, None, set(), paper=True, groups=groups)
+    assert live["group_counts"] == {"violation": 1} and "PAPER-TRADED" in logged[0]
+    assert arbs[0]["family"] == "group:me_event" and arbs[0]["kind"] == "me_event_overround"
+    bought = [r for r in ledger.load_rows(fills) if r["event"] == "fill"]
+    assert sorted(r["ticker"] for r in bought) == ["PM-x", "PM-y", "PM-z"] and all(r["side"] == "no" for r in bought)

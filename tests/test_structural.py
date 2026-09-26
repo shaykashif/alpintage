@@ -117,3 +117,21 @@ def test_family_pairs_finds_ladder_pairs():
     pairs = {(a.ticker, b.ticker) for a, b in structural.family_pairs(ms)}
     assert (sol_range(110, 120).ticker, sol_above(120).ticker) in pairs or (sol_above(120).ticker, sol_range(110, 120).ticker) in pairs
     assert all(a.ticker < b.ticker for a, b in structural.family_pairs(ms))
+
+
+def sol_less(x, day=28):
+    return C(f"PM-will-the-price-of-solana-be-less-than-{x}-on-september-{day}-2026",
+             f"Will the price of Solana be less than ${x} on September {day}?", CLOSE.format(s="SOL"))
+
+
+def sol_greater(x, day=28):
+    return C(f"PM-will-the-price-of-solana-be-greater-than-{x}-on-september-{day}-2026",
+             f"Will the price of Solana be greater than ${x} on September {day}?", CLOSE.format(s="SOL"))
+
+
+def test_covers_all_needs_a_gapless_bracket_set():
+    full = [sol_less(100), sol_range(100, 110), sol_range(110, 120), sol_greater(120)]
+    assert structural.covers_all(full)
+    assert not structural.covers_all([sol_less(100), sol_range(110, 120), sol_greater(120)])  # 100-110 missing
+    assert not structural.covers_all(full[:-1])  # nothing above 120
+    assert not structural.covers_all(full[:-1] + [sol_greater(120, day=27)])  # mixed dates

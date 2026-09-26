@@ -68,7 +68,7 @@ from kalshi_engine.relation_sources import (  # noqa: E402
 )
 from kalshi_engine.relation_trading import (  # noqa: E402
     LIVE_PATH, WATCHLIST_PATH, HeldBook, append_arb_rows, arb_row, execute, execute_exit, exit_candidates,
-    held_sets, load_watchlist, pair_id, price_relations, settled_payouts, write_json_atomic,
+    held_sets, load_watchlist, pair_id, price_group, price_relations, settled_payouts, write_json_atomic,
 )
 
 BACKOFF_MAX_S = 60.0
@@ -116,23 +116,26 @@ def live_row(p: dict, priced: dict) -> dict:
             "a": quote(a), "b": quote(b)}
 
 
-def unique_contracts(pairs: list[dict]) -> list[relations.Contract]:
-    return list({id(c): c for p in pairs for c in (p["a"], p["b"])}.values())
+def unique_contracts(pairs: list[dict], groups: list[dict] | None = None) -> list[relations.Contract]:
+    members = [c for p in pairs for c in (p["a"], p["b"])] + [c for g in groups or [] for c in g["contracts"]]
+    return list({id(c): c for c in members}.values())
 
 
-def tick(pairs: list[dict], client: httpx.Client, open_signals: set[str], paper: bool) -> tuple[dict, list[str]]:
+def tick(pairs: list[dict], client: httpx.Client, open_signals: set[str], paper: bool,
+         groups: list[dict] | None = None) -> tuple[dict, list[str]]:
     """One polling pass: fetch every watched quote, then price and trade."""
-    contracts = unique_contracts(pairs)
+    contracts = unique_contracts(pairs, groups)
     t0 = time.monotonic()
     quotes, errors = fetch_quotes(contracts, client)
     fetch_ms = round((time.monotonic() - t0) * 1000)
-    return price_and_trade(pairs, contracts, quotes, errors, open_signals, paper, {"fetch_ms": fetch_ms})
+    return price_and_trade(pairs, contracts, quotes, errors, open_signals, paper, {"fetch_ms": fetch_ms}, groups=groups)
 
 
 def price_and_trade(pairs: list[dict], contracts: list[relations.Contract], quotes: dict[str, Quote],
                     errors: list[str], open_signals: set[str], paper: bool, extra: dict | None = None,
                     write: bool = True, dirty: set[str] | None = None,
-                    memo: dict[int, tuple[dict, list]] | None = None) -> tuple[dict, list[str]]:
+                    memo: dict[int, tuple[dict, list]] | None = None,
+                    groups: list[dict] | None = None) -> tuple[dict, list[str]]:
     """Apply `quotes`, re-price the relations, log (and with `paper`, buy)
     each violation once when it appears, and write relation_live.json.
 
@@ -150,6 +153,19 @@ def price_and_trade(pairs: list[dict], contracts: list[relations.Contract], quot
             if memo is not None:
                 memo[i] = cached
         rows.append(cached[0])
+        violations += cached[1]
+    # Whole events (relation_trading.price_group). memo keys past the pairs'.
+    group_counts: dict[str, int] = {}
+    for j, g in enumerate(groups or []):
+        i = len(pairs) + j
+        cached = memo.get(i) if memo is not None and dirty is not None else None
+        if cached is None or any(c.ticker in dirty for c in g["contracts"]):
+            arb = price_group(g)
+            status = "unpriced" if arb is None else "violation" if arb.edge_per_set > 0 else "consistent"
+            cached = ({"status": status}, [(arb, {"family": f"group:{g['kind']}"})] if status == "violation" else [])
+            if memo is not None:
+                memo[i] = cached
+        group_counts[cached[0]["status"]] = group_counts.get(cached[0]["status"], 0) + 1
         violations += cached[1]
 
     # A violation is logged (and traded) once when it appears, keyed on its
@@ -187,7 +203,8 @@ def price_and_trade(pairs: list[dict], contracts: list[relations.Contract], quot
     live = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "pairs": len(pairs), "markets": len(contracts), "quoted": sum(1 for c in contracts if c.ticker in quotes),
-        "errors": errors, "counts": counts, "rows": rows, **(extra or {}),
+        "errors": errors, "counts": counts, "rows": rows, "groups": len(groups or []), "group_counts": group_counts,
+        **(extra or {}),
     }
     if write:
         write_json_atomic(LIVE_PATH, live)
@@ -240,13 +257,14 @@ class StreamState:
         self.books = LiveBooks()
         self.polled: dict[str, Quote] = {}  # Kalshi quotes when there's no key to stream with
         self.pairs: list[dict] = []
+        self.groups: list[dict] = []
         self.generation = 0  # bumped when the watchlist changes: feeds resubscribe
         self.changed = asyncio.Event()  # a watched book moved
         self.dirty: set[str] = set()  # tickers whose quotes changed since the last pricing pass
         self.feed: dict[str, str] = {"kalshi": "starting", "polymarket": "starting"}
 
     def tickers(self, venue: str) -> list[str]:
-        return sorted({c.ticker for c in unique_contracts(self.pairs) if c.venue == venue})
+        return sorted({c.ticker for c in unique_contracts(self.pairs, self.groups) if c.venue == venue})
 
 
 async def _until_generation_changes(state: StreamState, gen: int) -> None:
@@ -382,14 +400,14 @@ async def pricer(state: StreamState, paper: bool) -> None:
         except FileNotFoundError:
             mtime = None
         if mtime != watch_mtime:
-            state.pairs, watch_mtime = load_watchlist(), mtime
+            (state.pairs, state.groups), watch_mtime = load_watchlist(with_groups=True), mtime
             state.generation += 1
             open_signals.clear()
             memo.clear()  # pair indices changed: price everything afresh
-            print(f"[{_now()}] watchlist: {len(state.pairs)} confirmed relation(s)", flush=True)
+            print(f"[{_now()}] watchlist: {len(state.pairs)} confirmed relation(s), {len(state.groups)} event group(s)", flush=True)
 
         now = time.monotonic()
-        if not state.pairs:
+        if not state.pairs and not state.groups:
             if now - last_write >= LIVE_WRITE_S:
                 write_waiting(watch_mtime is not None)
                 last_write = now
@@ -401,8 +419,8 @@ async def pricer(state: StreamState, paper: bool) -> None:
         write = now - last_write >= LIVE_WRITE_S
         try:
             _, logged = await asyncio.to_thread(
-                price_and_trade, state.pairs, unique_contracts(state.pairs), quotes, errors, open_signals, paper,
-                {"mode": "stream", "feeds": dict(state.feed)}, write, dirty, memo)
+                price_and_trade, state.pairs, unique_contracts(state.pairs, state.groups), quotes, errors, open_signals, paper,
+                {"mode": "stream", "feeds": dict(state.feed)}, write, dirty, memo, state.groups)
         except Exception as exc:  # noqa: BLE001 -- e.g. ledger lock timeout: re-evaluate next pass
             print(f"[{_now()}] pricing failed: {exc}", flush=True)
             open_signals.clear()
@@ -447,6 +465,7 @@ def main() -> None:
 
     client = httpx.Client(base_url=KALSHI_BASE, timeout=10.0)
     pairs: list[dict] = []
+    groups: list[dict] = []
     watch_mtime = None
     open_signals: set[str] = set()
     backoff = args.interval_s
@@ -462,12 +481,12 @@ def main() -> None:
             except FileNotFoundError:
                 mtime = None
             if mtime != watch_mtime:
-                pairs, watch_mtime = load_watchlist(), mtime
+                (pairs, groups), watch_mtime = load_watchlist(with_groups=True), mtime
                 open_signals.clear()
                 print(f"[{_now()}] watchlist: {len(pairs)} confirmed relation(s)", flush=True)
-            if pairs:
+            if pairs or groups:
                 try:
-                    live, logged = tick(pairs, client, open_signals, args.paper)
+                    live, logged = tick(pairs, client, open_signals, args.paper, groups)
                 except Exception as exc:  # noqa: BLE001 -- e.g. ledger lock timeout: retry next tick
                     print(f"[{_now()}] tick failed: {exc}", flush=True)
                     live, logged = {"errors": [str(exc)]}, []

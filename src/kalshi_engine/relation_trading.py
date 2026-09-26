@@ -71,23 +71,37 @@ def _contract_dict(c: relations.Contract) -> dict:
 
 
 def write_watchlist(entries: list[tuple[relations.Contract, relations.Contract, list[str], dict]],
-                    path: Path = WATCHLIST_PATH) -> None:
-    """Every Jev-confirmed pair from the latest scan: (a, b, relations, verdict)."""
+                    path: Path = WATCHLIST_PATH, groups: list[dict] | None = None) -> None:
+    """Every confirmed pair from the latest scan: (a, b, relations, verdict),
+    plus `groups` -- whole events priced as one set: {"kind": "me_event" |
+    "partition", "event": id, "contracts": [Contract]} (see price_group)."""
     write_json_atomic(path, {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "pairs": [{"a": _contract_dict(a), "b": _contract_dict(b), "relations": rels, "probs": v.get("probs"),
                    "family": v.get("family")} for a, b, rels, v in entries],
+        "groups": [{"kind": g["kind"], "event": g["event"], "contracts": [_contract_dict(c) for c in g["contracts"]]}
+                   for g in groups or []],
     })
 
 
-def load_watchlist(path: Path = WATCHLIST_PATH) -> list[dict]:
-    """[{"a": Contract, "b": Contract, "relations": [...], "verdict": {...}}].
-    Markets appearing in several pairs share one Contract object, so one
-    quote update reaches every pair."""
+def price_group(g: dict) -> relations.Arb | None:
+    """me_event: NO on every quoted market of a winner-take-all event (pays
+    n - 1). partition: YES on every bracket of a set that covers all prices
+    (pays $1)."""
+    if g["kind"] == "me_event":
+        return relations.me_event_arb(g["contracts"])
+    return relations.partition_arb(g["contracts"])
+
+
+def load_watchlist(path: Path = WATCHLIST_PATH, with_groups: bool = False):
+    """[{"a": Contract, "b": Contract, "relations": [...], "verdict": {...}}]
+    -- or with `with_groups`, (pairs, groups). Markets appearing in several
+    pairs or groups share one Contract object, so one quote update reaches
+    every one of them."""
     try:
         body = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
-        return []
+        return ([], []) if with_groups else []
     shared: dict[str, relations.Contract] = {}
 
     def contract(d: dict) -> relations.Contract:
@@ -96,8 +110,13 @@ def load_watchlist(path: Path = WATCHLIST_PATH) -> list[dict]:
             c = shared[d["ticker"]] = relations.Contract(**{k: v for k, v in d.items() if k in _CONTRACT_FIELDS})
         return c
 
-    return [{"a": contract(p["a"]), "b": contract(p["b"]), "relations": p["relations"],
-             "verdict": {"probs": p.get("probs"), "family": p.get("family")}} for p in body.get("pairs", [])]
+    pairs = [{"a": contract(p["a"]), "b": contract(p["b"]), "relations": p["relations"],
+              "verdict": {"probs": p.get("probs"), "family": p.get("family")}} for p in body.get("pairs", [])]
+    if not with_groups:
+        return pairs
+    groups = [{"kind": g["kind"], "event": g["event"], "contracts": [contract(d) for d in g["contracts"]]}
+              for g in body.get("groups", [])]
+    return pairs, groups
 
 
 # ---- Trading -------------------------------------------------------------------
@@ -116,7 +135,7 @@ def arb_row(arb: relations.Arb, verdict: dict | None, source: str = "scan") -> d
         "fees_usd": arb.fees_usd,
         "tradeable": arb.tradeable,
         "reason": arb.reason,
-        "jev_probs": verdict["probs"] if verdict else None,
+        "jev_probs": verdict.get("probs") if verdict else None,
         # Which judged the relation: a structural.py family, "jev", or None (Kalshi ME-event check).
         "family": verdict.get("family") if verdict else None,
         "traded": False,
@@ -241,7 +260,7 @@ def execute(arb: relations.Arb, broker: PaperBroker, held: HeldBook, verdict: di
             reason=f"relation arb ({arb.kind}){' top-up' if topup else ''}, edge={arb.edge_per_set:.3f}/set",
             strategy=STRATEGY, venue=leg.contract.venue, relation=arb.kind, arb_group=group,
             payout_per_set=arb.payout_per_set, topup=topup,
-            edge=arb.edge_per_set, jev_probs=verdict["probs"] if verdict else None,
+            edge=arb.edge_per_set, jev_probs=verdict.get("probs") if verdict else None,
         )
         held.add(leg.contract.ticker, leg.side, group)
     held.last_edge[group] = arb.edge_per_set

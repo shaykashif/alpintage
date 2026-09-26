@@ -55,7 +55,8 @@ from kalshi_engine import ledger, relations  # noqa: E402
 from kalshi_engine.jev_client import ask_noul_multi  # noqa: E402
 from kalshi_engine.paper_broker import PaperBroker  # noqa: E402
 from kalshi_engine.relation_trading import (  # noqa: E402
-    ARBS_PATH, STRATEGY, HeldBook, append_arb_rows, arb_row, execute, price_relations, settled_payouts, write_watchlist,
+    ARBS_PATH, STRATEGY, HeldBook, append_arb_rows, arb_row, execute, price_group, price_relations, settled_payouts,
+    write_watchlist,
 )
 from kalshi_engine.relation_sources import (  # noqa: E402
     fetch_kalshi_events, fetch_polymarket_events, kalshi_contracts, polymarket_contracts, topic_subjects,
@@ -304,17 +305,26 @@ def main() -> None:
         print(f"  RELATION {rels}: {a.ticker} <-> {b.ticker}")
         opportunities += [(arb, verdict) for arb in arbs if arb.edge_per_set > 0]
     write_comparisons(comparisons, universe, total_judged=len(cache))
-    # The fast loop (run_relation_watcher.py) re-prices exactly these pairs every few seconds.
-    write_watchlist(watch)
-
+    # Whole events priced as one set: NO on every market of a winner-take-all
+    # event (Kalshi mutually_exclusive / Polymarket negRisk), and YES on every
+    # bracket of a set that provably covers all prices (structural.covers_all).
     by_event: dict[str, list[relations.Contract]] = {}
     for c in contracts:
-        if c.venue == "kalshi" and c.event_mutually_exclusive:
-            by_event.setdefault(c.event_id, []).append(c)
-    for event_contracts in by_event.values():
-        arb = relations.me_event_arb(event_contracts)
+        by_event.setdefault(c.event_id, []).append(c)
+    groups = []
+    for eid, members in by_event.items():
+        if len(members) >= 2 and all(c.event_mutually_exclusive for c in members):
+            groups.append({"kind": "me_event", "event": eid, "contracts": members})
+        if len(members) >= 2 and structural.covers_all(members):
+            groups.append({"kind": "partition", "event": eid, "contracts": members})
+    print(f"{len(groups)} event group(s) priced as sets "
+          f"({sum(g['kind'] == 'partition' for g in groups)} complete bracket sets)")
+    # The fast loop (run_relation_watcher.py) re-prices exactly these pairs and groups live.
+    write_watchlist(watch, groups=groups)
+    for g in groups:
+        arb = price_group(g)
         if arb is not None and arb.edge_per_set > 0:
-            opportunities.append((arb, None))
+            opportunities.append((arb, {"family": f"group:{g['kind']}"}))
 
     rows = []
     opportunities.sort(key=lambda o: o[0].edge_per_set, reverse=True)

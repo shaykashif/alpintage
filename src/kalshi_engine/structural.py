@@ -373,6 +373,27 @@ def _rank(a: Rank, b: Rank) -> Verdict | None:
     return None
 
 
+def covers_all(contracts: list[Contract]) -> bool:
+    """True when the markets are noon-close brackets for one coin and date
+    that together cover every price with no gap -- so YES on all of them is
+    certain to pay exactly one $1 (see relations.partition_arb)."""
+    parsed = [parse_crypto(c) for c in contracts]
+    if len(parsed) < 2 or any(p is None or p.kind != "close" for p in parsed):
+        return False
+    if len({(p.symbol, p.start) for p in parsed}) != 1:
+        return False
+    parsed.sort(key=lambda p: (p.lo, not p.lo_in))
+    if parsed[0].lo != -INF or max(p.hi for p in parsed) != INF:
+        return False
+    reach, reach_in = parsed[0].hi, parsed[0].hi_in
+    for p in parsed[1:]:
+        if p.lo > reach or (p.lo == reach and not (reach_in or p.lo_in)):
+            return False  # a gap: some price is in no bracket
+        if (p.hi, p.hi_in) > (reach, reach_in):
+            reach, reach_in = p.hi, p.hi_in
+    return True
+
+
 # ---- entry points ---------------------------------------------------------------
 
 def judge(a: Contract, b: Contract) -> Verdict | None:

@@ -377,3 +377,22 @@ def test_settlement_keys_from_venue_data():
     m = {"expected_expiration_time": "2026-09-30T14:00:00Z"}
     assert kalshi_settlement(ev, m) == "kalshi|netflix top 10|2026-09-30T14:00:00Z"
     assert kalshi_settlement({}, m) is None
+
+
+# --- whole-event groups -------------------------------------------------------------
+
+def test_me_event_arb_uses_every_quoted_market():
+    # Three outcomes of a winner-take-all event; NO asks 0.70 + 0.70 + 0.55 = 1.95 < $2.
+    ms = [C(t, bid, bid + 0.01, me=True) for t, bid in (("E-A", 0.30), ("E-B", 0.30), ("E-C", 0.45))]
+    ms.append(C("E-D", None, 0.02, me=True))  # no bid, so no NO ask: left out, not fatal
+    arb = relations.me_event_arb(ms)
+    assert arb and len(arb.legs) == 3 and arb.payout_per_set == 2.0 and arb.edge_per_set > 0
+
+
+def test_partition_arb_buys_yes_on_every_bracket():
+    ms = [C(f"B{i}", 0.20, ask, venue="polymarket") for i, ask in enumerate((0.30, 0.30, 0.35))]  # fee-free
+    arb = relations.partition_arb(ms)
+    assert arb.payout_per_set == 1.0 and [l.side for l in arb.legs] == ["yes"] * 3
+    assert arb.edge_per_set == pytest.approx(0.05) and arb.tradeable
+    ms[1].yes_ask = None
+    assert relations.partition_arb(ms) is None  # a bracket that can't be bought voids the set
