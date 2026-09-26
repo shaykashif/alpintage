@@ -17,6 +17,8 @@ families themselves are regular enough to judge exactly:
   - econ     Kalshi BLS releases (CPI, core, YoY, U-3): "above X" vs "exactly
              Y" for the same number and month; ISM PMIs across venues
              (Kalshi at-least/above vs Polymarket one-decimal brackets).
+  - centralbank  policy-rate decisions at one bank's meeting, across venues:
+             Kalshi buckets vs Polymarket brackets (which round up to 25 bp).
   - treasury Kalshi daily par yield "above X on D" vs "above/below X on any
              business day" in a window containing D, same tenor.
   - rank     chart positions (#1, #2, top N) -- Netflix, Billboard, YouTube,
@@ -343,6 +345,70 @@ def _measure(a: Measure, b: Measure) -> list[str] | None:
     return sorted(rels)
 
 
+# ---- central-bank decisions -------------------------------------------------------
+#
+# Each market becomes a range of the policy-rate change x (bps, cuts negative)
+# at one bank's meeting, and the interval logic above decides the relation.
+# Kalshi buckets are inclusive ("Cut 1-25bps" = [-25, 0)); the Fed series is
+# exact multiples of 25. Polymarket rounds a change UP to the nearest 25, so
+# "decreases by 50 bps" is a cut in (25, 50] and "50 bps or more" a cut > 25.
+
+_CB_KALSHI = {"INDIA": "india", "EU": "ecb", "ENGLAND": "england", "JAPAN": "japan", "KOREA": "korea",
+              "MEXICO": "mexico", "NZ": "newzealand", "RUSSIA": "russia", "CANADA": "canada",
+              "BRAZIL": "brazil", "AUSTRALIA": "australia"}
+_CB_POLY = [("Reserve Bank of India", "india"), ("European Central Bank", "ecb"), ("ECB", "ecb"),
+            ("Bank of England", "england"), ("Bank of Japan", "japan"), ("Bank of Korea", "korea"),
+            ("Bank of Mexico", "mexico"), ("Reserve Bank of New Zealand", "newzealand"),
+            ("Bank of Russia", "russia"), ("Bank of Canada", "canada"), ("Bank of Brazil", "brazil"),
+            ("Reserve Bank of Australia", "australia"), ("Federal Reserve", "fed"), ("Fed ", "fed")]
+
+
+def parse_cb(c: Contract) -> Measure | None:
+    rules = c.context or ""
+    if c.venue == "kalshi":
+        m = re.match(r"^KX(?:CBDECISION([A-Z]+)|(FED)DECISION)-(\d{2})([A-Z]{3})\d*-([A-Z0-9]+)$", c.ticker)
+        if not m or m.group(4).lower() not in MON3:
+            return None
+        bank = "fed" if m.group(2) else _CB_KALSHI.get(m.group(1))
+        if not bank or "meeting" not in rules.lower() and bank != "fed":
+            return None
+        metric = f"cb|{bank}|20{m.group(3)}-{MON3[m.group(4).lower()]:02d}"
+        code, fed = m.group(5), bank == "fed"
+        ranges = {"HOLD": (0, True, 0, True), "H0": (0, True, 0, True),
+                  "C25": (-25, True, -25, True) if fed else (-25, True, 0, False),
+                  "H25": (25, True, 25, True) if fed else (0, False, 25, True),
+                  "C25P": (-INF, False, -25, False), "C26": (-INF, False, -25, False),
+                  "H25P": (25, False, INF, False), "H26": (25, False, INF, False)}
+        if code not in ranges:
+            return None
+        return Measure(metric, "", *ranges[code])
+    if c.venue != "polymarket":
+        return None
+    q = c.title
+    bank = next((key for name, key in _CB_POLY if name in q), None)
+    mo = re.search(r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b", q)
+    year = re.search(rf"{mo.group(1)} (20\d\d)", rules) if mo else None
+    if not bank or not mo or not year:
+        return None
+    metric = f"cb|{bank}|{year.group(1)}-{MONTHS[mo.group(1).lower()]:02d}"
+    if re.search(r"\bno change\b", q, re.I):
+        return Measure(metric, "", 0, True, 0, True)
+    m = re.search(r"\b(decrease|decreases|cut|increase|increases|hike)\b.*?\bby (\d+)(\+)?\s?(?:bps|basis points)( or more)?", q, re.I)
+    if m:
+        if "rounded up to the nearest 25" not in rules:
+            return None  # the brackets mean something else (e.g. Bank of Canada rounds to the NEAREST 25)
+        n, more, cut = int(m.group(2)), bool(m.group(3) or m.group(4)), m.group(1).lower() in ("decrease", "decreases", "cut")
+        if n % 25 or n <= 0:
+            return None
+        if cut:
+            return Measure(metric, "", -INF, False, -(n - 25), False) if more else Measure(metric, "", -n, True, -(n - 25), False)
+        return Measure(metric, "", n - 25, False, INF, False) if more else Measure(metric, "", n - 25, False, n, True)
+    m = re.search(r"\b(decrease|increase)\b the [\w\s]+? rate\b(?! by)", q, re.I)
+    if m:  # any cut / any hike
+        return Measure(metric, "", -INF, False, 0, False) if m.group(1).lower() == "decrease" else Measure(metric, "", 0, False, INF, False)
+    return None
+
+
 # ---- Treasury par yields (Kalshi) ---------------------------------------------------
 
 @dataclass
@@ -591,6 +657,11 @@ def judge(a: Contract, b: Contract) -> Verdict | None:
         rels = _measure(ma, mb)
         if rels is not None:
             return Verdict(rels, "econ", "same published number: interval logic on its value")
+    ca, cb = parse_cb(a), parse_cb(b)
+    if ca and cb:
+        rels = _measure(ca, cb)
+        if rels is not None:
+            return Verdict(rels, "centralbank", "policy-rate change ranges at the same meeting")
     ua, ub = parse_yield(a), parse_yield(b)
     if ua and ub:
         return Verdict(_yield(ua, ub), "treasury", "daily par yield inside the window, same tenor")
@@ -632,6 +703,9 @@ def family_key(c: Contract) -> str | None:
     y = parse_yield(c)
     if y:
         return f"ust|{y.tenor}"
+    cbm = parse_cb(c)
+    if cbm:
+        return cbm.metric
     rk = parse_rank(c)
     if rk and rk.chart:
         return f"rank|{rk.subject}"

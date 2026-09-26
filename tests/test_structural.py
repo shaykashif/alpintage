@@ -184,3 +184,37 @@ def test_treasury_daily_inside_window():
     assert rels(window, day("5.40")) == []  # the day's bar is lower than the window's
     assert rels(low, day("5.24", d=30)) == ["exhaustive"]
     assert rels(window, day("5.45", tenor=10)) is None or rels(window, day("5.45", tenor=10)) == []
+
+
+ROUND_UP = "If the rate is changed to a level not expressed in the displayed options, the change will be rounded up to the nearest 25."
+
+
+def boj_k(code, label):
+    return C(f"KXCBDECISIONJAPAN-26OCT29-{code}", f"Will the Bank of Japan {label} at the October 2026 Monetary Policy Meeting? -- {label}",
+             f"If the Bank of Japan takes the action of {label} at October 2026 Monetary Policy Meeting ... meeting is cancelled")
+
+
+def boj_pm(q):
+    return C("PM-boj-" + q[:12].replace(" ", "-").lower(), q, f"... the Bank of Japan's October 2026 meeting. {ROUND_UP}")
+
+
+def test_central_bank_buckets_across_venues():
+    cut25_k = boj_k("C25", "Cut 1-25bps")
+    hold_k = boj_k("HOLD", "Maintain current rate")
+    cut_big_k = boj_k("C25P", "Cut more than 25bps")
+    cut25_pm = boj_pm("Bank of Japan decreases interest rates by 25 bps after the October 2026 meeting?")
+    cut50p_pm = boj_pm("Bank of Japan decreases interest rates by 50+ bps after the October 2026 meeting?")
+    hold_pm = boj_pm("No change in Bank of Japan's interest rates after the October 2026 meeting?")
+    assert rels(cut25_k, cut25_pm) == ["a_implies_b", "b_implies_a"]  # (0, 25] cut both ways
+    assert rels(cut_big_k, cut50p_pm) == ["a_implies_b", "b_implies_a"]  # a cut of more than 25
+    assert rels(hold_k, hold_pm) == ["a_implies_b", "b_implies_a"]
+    assert rels(hold_k, cut25_pm) == ["mutually_exclusive"]
+    nearest = C("PM-boc", "Will the Bank of Canada decrease the target for the overnight rate by 25 bps at the October interest rate announcement?",
+                "October 2026 ... Increases or decreases of greater than 25 bps will be rounded to the nearest 25 bps")
+    assert structural.parse_cb(nearest) is None  # different rounding: left to Jev
+
+
+def test_fed_exact_buckets_imply_polymarket_brackets_one_way():
+    fed_k = C("KXFEDDECISION-26OCT-C25", "Fed decision in Oct 2026? -- Cut 25bps", "If the Federal Reserve does a Cut of 25bps on October 28, 2026")
+    fed_pm = C("PM-fed-25", "Will the Fed decrease interest rates by 25 bps after the October 2026 meeting?", f"October 2026 meeting. {ROUND_UP}")
+    assert rels(fed_k, fed_pm) == ["a_implies_b"]  # a 12.5 bp cut is Polymarket's 25 bracket, not Kalshi's exact 25
