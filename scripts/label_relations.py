@@ -195,12 +195,36 @@ def report() -> None:
           " run_relation_scanner.py as --threshold / --gate-threshold / --implication-gate-threshold).")
 
 
+def export(path: Path, limit: int) -> None:
+    """Write the unlabeled pairs, with both markets' titles and full rules,
+    to one JSONL file -- to label somewhere other than this terminal."""
+    cache = load_latest(CACHE_PATH)
+    done = load_latest(LABELS_PATH)
+    todo = [r for k, r in cache.items() if k not in done and r.get("route") == "typesafe"
+            and best(r["probs"])[1] >= MIN_BEST]
+    todo.sort(key=lambda r: abs(best(r["probs"])[1] - relations.RELATION_THRESHOLD))
+    todo = todo[:limit]
+    with path.open("w", encoding="utf-8") as f:
+        for i, row in enumerate(todo, 1):
+            verdict, why = relations.classify(row["probs"])
+            f.write(json.dumps({"key": row["key"], "a": row["a"], "b": row["b"], "probs": row["probs"],
+                                "model": row.get("model"), "verdict": verdict, "verdict_note": why,
+                                "a_market": market_text(row["a"]), "b_market": market_text(row["b"])}) + "\n")
+            if i % 25 == 0:
+                print(f"  {i}/{len(todo)}", flush=True)
+    print(f"wrote {len(todo)} pair(s) to {path}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--report", action="store_true", help="calibration report from the labels so far")
-    ap.add_argument("--limit", type=int, default=500, help="max pairs to show this session")
+    ap.add_argument("--export", metavar="FILE", help="write unlabeled pairs with their rules to FILE (JSONL) instead")
+    ap.add_argument("--limit", type=int, default=500, help="max pairs to show / export")
     args = ap.parse_args()
-    report() if args.report else label(args.limit)
+    if args.export:
+        export(Path(args.export), args.limit)
+    else:
+        report() if args.report else label(args.limit)
 
 
 if __name__ == "__main__":
