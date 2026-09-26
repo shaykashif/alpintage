@@ -149,7 +149,8 @@ def price_and_trade(pairs: list[dict], contracts: list[relations.Contract], quot
     for i, p in enumerate(pairs):
         cached = memo.get(i) if memo is not None and dirty is not None else None
         if cached is None or p["a"].ticker in dirty or p["b"].ticker in dirty:
-            priced = price_relations(p["a"], p["b"], p["relations"])
+            fam = (p["verdict"] or {}).get("family")
+            priced = price_relations(p["a"], p["b"], p["relations"], proven=bool(fam) and fam != "jev")
             cached = (live_row(p, priced), [(arb, p["verdict"]) for arb in priced["arbs"] if arb.edge_per_set > 0])
             if memo is not None:
                 memo[i] = cached

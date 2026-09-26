@@ -114,7 +114,7 @@ def test_only_pairs_touching_a_moved_market_are_repriced(tmp_path, monkeypatch):
     contracts = rrw.unique_contracts(pairs)
     calls = []
     real = rrw.price_relations
-    monkeypatch.setattr(rrw, "price_relations", lambda x, y, r: calls.append(x.ticker) or real(x, y, r))
+    monkeypatch.setattr(rrw, "price_relations", lambda x, y, r, **kw: calls.append(x.ticker) or real(x, y, r, **kw))
     quotes = {t: Quote(0.40, 0.42, 10, 10) for t in "ABCD"}
     memo: dict = {}
     rrw.price_and_trade(pairs, contracts, quotes, [], set(), False, dirty=set(), memo=memo)

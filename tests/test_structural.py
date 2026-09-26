@@ -218,3 +218,17 @@ def test_fed_exact_buckets_imply_polymarket_brackets_one_way():
     fed_k = C("KXFEDDECISION-26OCT-C25", "Fed decision in Oct 2026? -- Cut 25bps", "If the Federal Reserve does a Cut of 25bps on October 28, 2026")
     fed_pm = C("PM-fed-25", "Will the Fed decrease interest rates by 25 bps after the October 2026 meeting?", f"October 2026 meeting. {ROUND_UP}")
     assert rels(fed_k, fed_pm) == ["a_implies_b"]  # a 12.5 bp cut is Polymarket's 25 bracket, not Kalshi's exact 25
+
+
+def test_rule_proven_pairs_skip_the_implausible_edge_cap():
+    from kalshi_engine import relation_trading as rt
+    # Seen live 2026-09-26: NO "above $110" @0.08 + NO "$100-110" @0.06 for a set paying at least $1.
+    above, rng = sol_above(110, day=30), sol_range(100, 110, day=30)
+    for c, no_ask in ((above, 0.08), (rng, 0.06)):
+        c.yes_bid, c.yes_ask, c.yes_bid_size, c.yes_ask_size = round(1 - no_ask, 2), 0.99, 10, 10
+    assert rels(above, rng) == ["mutually_exclusive"]
+    guarded = rt.price_relations(above, rng, ["mutually_exclusive"])
+    assert "implausibly large" in guarded["arbs"][0].reason  # a Jev-judged pair keeps the cap
+    proven = rt.price_relations(above, rng, ["mutually_exclusive"], proven=True)
+    arb = proven["arbs"][0]
+    assert arb.tradeable and arb.edge_per_set > 0.8 and arb.qty == 10

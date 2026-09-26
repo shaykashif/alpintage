@@ -380,14 +380,19 @@ def _walk(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg: fl
     return Arb(kind, walked, qty, payout, round(cost, 4), round(payout - cost, 4), round(fees, 4))
 
 
-def _evaluate(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg: float, max_qty: int) -> Arb:
+def _evaluate(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg: float, max_qty: int,
+              proven: bool = False) -> Arb:
+    """`proven`: the relation was proven by structural.py's rules or asserted
+    by the exchange (a winner-take-all event), so the implausible-edge cap --
+    a guard against a MISREAD relation -- doesn't apply. A huge edge on a
+    proven relation is a real (if fleeting) mispricing."""
     walked = _walk(kind, legs, payout, max_notional_per_leg, max_qty)
     if walked is not None and any(len(l.fills) > 1 for l in walked.legs):
         # Depth past the best price was used: keep the walked set.
         cap = plausible_edge_cap(walked.legs)
         if walked.edge_per_set <= MIN_EDGE:
             walked.reason = f"edge {walked.edge_per_set:.4f} <= MIN_EDGE"
-        elif walked.edge_per_set / payout > cap:
+        elif not proven and walked.edge_per_set / payout > cap:
             walked.reason = (f"edge {walked.edge_per_set:.3f} implausibly large"
                              f"{' even for same-settlement markets' if cap == MAX_PLAUSIBLE_EDGE_SAME_SETTLEMENT else ''}"
                              " -- relation probably wrong")
@@ -406,7 +411,7 @@ def _evaluate(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg
     arb = Arb(kind, legs, qty, payout, round(cost, 4), round(edge, 4), round(fees, 4))
     if edge <= MIN_EDGE:
         arb.reason = f"edge {edge:.4f} <= MIN_EDGE"
-    elif edge / payout > plausible_edge_cap(legs):
+    elif not proven and edge / payout > plausible_edge_cap(legs):
         same = plausible_edge_cap(legs) == MAX_PLAUSIBLE_EDGE_SAME_SETTLEMENT
         arb.reason = f"edge {edge:.3f} implausibly large{' even for same-settlement markets' if same else ''} -- relation probably wrong"
     return arb
@@ -415,10 +420,12 @@ def _evaluate(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg
 def resize(arb: Arb, max_qty: int) -> Arb:
     """The same set at most `max_qty` deep, re-priced (fees, edge and
     tradeability all depend on quantity)."""
-    return _evaluate(arb.kind, arb.legs, arb.payout_per_set, 1e12, max(0, min(arb.qty, max_qty)))
+    return _evaluate(arb.kind, arb.legs, arb.payout_per_set, 1e12, max(0, min(arb.qty, max_qty)),
+                     proven=arb.meta.get("proven", False))
 
 
-def relation_arb(relation: str, a: Contract, b: Contract, max_notional_per_leg: float = 500.0, max_qty: int = 10000) -> Arb | None:
+def relation_arb(relation: str, a: Contract, b: Contract, max_notional_per_leg: float = 500.0, max_qty: int = 10000,
+                 proven: bool = False) -> Arb | None:
     """The two-leg arbitrage implied by `relation`, priced at the current
     asks. None if a leg has no ask at all."""
     side_a, side_b = _LEGS[relation]
@@ -426,7 +433,9 @@ def relation_arb(relation: str, a: Contract, b: Contract, max_notional_per_leg: 
     if pa is None or pb is None:
         return None
     legs = [ArbLeg(a, side_a, pa), ArbLeg(b, side_b, pb)]
-    return _evaluate(relation, legs, 1.0, max_notional_per_leg, max_qty)
+    arb = _evaluate(relation, legs, 1.0, max_notional_per_leg, max_qty, proven)
+    arb.meta["proven"] = proven
+    return arb
 
 
 def missing_quotes(relation: str, a: Contract, b: Contract) -> list[str]:
@@ -453,7 +462,9 @@ def me_event_arb(contracts: list[Contract], max_notional_per_leg: float = 500.0,
     legs = [ArbLeg(c, "no", p) for c in contracts if (p := c.ask("no")) is not None]
     if len(legs) < 2:
         return None
-    return _evaluate("me_event_overround", legs, float(len(legs) - 1), max_notional_per_leg, max_qty)
+    arb = _evaluate("me_event_overround", legs, float(len(legs) - 1), max_notional_per_leg, max_qty, proven=True)
+    arb.meta["proven"] = True  # the exchange asserts at most one YES
+    return arb
 
 
 def partition_arb(contracts: list[Contract], max_notional_per_leg: float = 500.0, max_qty: int = 10000) -> Arb | None:
@@ -468,7 +479,9 @@ def partition_arb(contracts: list[Contract], max_notional_per_leg: float = 500.0
         if p is None:
             return None
         legs.append(ArbLeg(c, "yes", p))
-    return _evaluate("partition_underround", legs, 1.0, max_notional_per_leg, max_qty)
+    arb = _evaluate("partition_underround", legs, 1.0, max_notional_per_leg, max_qty, proven=True)
+    arb.meta["proven"] = True  # coverage proven by structural.covers_all
+    return arb
 
 
 # --- Candidate pairs --------------------------------------------------------

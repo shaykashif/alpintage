@@ -47,11 +47,12 @@ def pair_id(a: relations.Contract, b: relations.Contract) -> str:
 
 # ---- Pricing -------------------------------------------------------------------
 
-def price_relations(a: relations.Contract, b: relations.Contract, rels: list[str]) -> dict:
+def price_relations(a: relations.Contract, b: relations.Contract, rels: list[str], proven: bool = False) -> dict:
     """Status of a confirmed relation at the contracts' current quotes:
     violation (best set pays more than it costs), consistent, or unpriced
-    (a leg has nothing to buy). `arbs` holds every priced set."""
-    arbs = [x for x in (relations.relation_arb(rel, a, b) for rel in rels) if x is not None]
+    (a leg has nothing to buy). `arbs` holds every priced set. `proven`:
+    the relation came from structural.py's rules (see relations._evaluate)."""
+    arbs = [x for x in (relations.relation_arb(rel, a, b, proven=proven) for rel in rels) if x is not None]
     if not arbs:
         gaps = sorted({g for rel in rels for g in relations.missing_quotes(rel, a, b)})
         return {"status": "unpriced", "edge": None, "note": "; ".join(gaps) or None, "arbs": []}

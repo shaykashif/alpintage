@@ -171,7 +171,7 @@ def comparison_row(a: relations.Contract, b: relations.Contract, verdict: dict, 
     best = max(relations.RELATIONS, key=lambda r: probs.get(r, 0.0))
     arbs: list[relations.Arb] = []
     if rels:
-        priced = price_relations(a, b, rels)
+        priced = price_relations(a, b, rels, proven=verdict.get("route") == "rules")
         status, edge, arbs = priced["status"], priced["edge"], priced["arbs"]
         why_not = priced["note"] or why_not
     else:
