@@ -216,6 +216,7 @@ class Contract:
     # watcher from live books; None = only the top of book is known.
     yes_bid_levels: list | None = None
     yes_ask_levels: list | None = None
+    opened_at: str | None = None  # when the market was created (ISO, UTC) -- some windows start then
 
     def ask(self, side: str) -> float | None:
         """Price to BUY `side`. A NO ask is the complement of the YES bid."""

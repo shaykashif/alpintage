@@ -280,6 +280,7 @@ def polymarket_contracts(events: list[VenueEvent], topics: dict[str, str | None]
                 fee_rate=float(sched.get("rate", 0.0)) if fees_on else 0.0,
                 fee_exponent=float(sched.get("exponent", 1.0)), topic=topic,
                 settlement=polymarket_settlement(pm),
+                opened_at=pm.get("createdAt") or pm.get("startDate"),
                 # negRisk: winner-take-all event, at most one market resolves YES.
                 event_mutually_exclusive=bool(e.raw.get("negRisk") or pm.get("negRisk")),
             ))

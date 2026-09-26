@@ -30,7 +30,7 @@ from __future__ import annotations
 import itertools
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from .relations import Contract
 
@@ -91,8 +91,17 @@ class Crypto:
     hi: float = INF
     hi_in: bool = False
     strike: float = 0.0  # high >= strike / low <= strike
-    start: date | None = None
+    start: date | None = None  # earliest day the window can cover
     end: date | None = None
+    # Latest day from which the window surely covers whole days: equals `start`
+    # for fixed windows; for "from the creation of this market" windows it's
+    # the day after creation (creation can be mid-day).
+    start_full: date | None = None
+    opened: str | None = None  # exact creation time when the window starts at creation
+
+    def __post_init__(self) -> None:
+        if self.start_full is None:
+            self.start_full = self.start
 
 
 def parse_crypto(c: Contract) -> Crypto | None:
@@ -125,15 +134,23 @@ def parse_crypto(c: Contract) -> Crypto | None:
             return Crypto(symbol, "close", hi=_num(m.group(1)), hi_in=False, start=d, end=d) if d else None
         return None
 
-    if "creation of this market" in rules:
-        return None  # window starts at an unstated moment: can't nest it
-    m = re.search(r"\b(reach|dip to) \$([\d,.]+) ", q + " ")
+    m = re.search(r"\b(reach|hit|dip to) \$([\d,.]+) ", q + " ")
     if not m:
         return None
-    kind = "high" if m.group(1) == "reach" else "low"
+    kind = "low" if m.group(1) == "dip to" else "high"
     if kind == "high" and "High" not in rules or kind == "low" and "Low" not in rules:
         return None
     strike = _num(m.group(2))
+    if "creation of this market" in rules:
+        # "... from the creation of this market until 11:59 PM ET on the date
+        # specified in the title": starts whenever the market was created.
+        w = re.search(rf"\bby {day}, (\d{{4}})\?", q)
+        opened = _created_days(c.opened_at)
+        if not w or not opened or "until 11:59 PM ET on the date specified" not in rules:
+            return None
+        e = _date(w.group(1), w.group(2), int(w.group(3)))
+        return Crypto(symbol, kind, strike=strike, start=opened[0], end=e,
+                      start_full=date.fromordinal(opened[1].toordinal() + 1), opened=c.opened_at) if e else None
     w = re.search(rf"\bon {day}\?", q)
     if w and "on the date specified" in rules:
         d = _date(w.group(1), w.group(2), year)
@@ -147,6 +164,19 @@ def parse_crypto(c: Contract) -> Crypto | None:
         mw = _month_window(w.group(1), year)
         return Crypto(symbol, kind, strike=strike, start=mw[0], end=mw[1]) if mw else None
     return None
+
+
+def _created_days(opened_at: str | None) -> tuple[date, date] | None:
+    """Earliest and latest ET calendar day of a UTC creation time (checked
+    at both EDT and EST, so no time-zone database is needed)."""
+    if not opened_at:
+        return None
+    try:
+        t = datetime.fromisoformat(opened_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    days = sorted({(t - timedelta(hours=h)).date() for h in (4, 5)})
+    return days[0], days[-1]
 
 
 def _subset(a: Crypto, b: Crypto) -> bool:
@@ -202,7 +232,7 @@ def _crypto(a: Crypto, b: Crypto) -> list[str]:
         return sorted(rels)
     if a.kind == "close" or b.kind == "close":
         close, path, close_is_a = (a, b, True) if a.kind == "close" else (b, a, False)
-        if not (path.start <= close.start <= path.end):
+        if not (path.start_full <= close.start <= path.end):
             return []
         if _close_within(close, path.strike, path.kind):
             rels.add("a_implies_b" if close_is_a else "b_implies_a")
@@ -212,7 +242,10 @@ def _crypto(a: Crypto, b: Crypto) -> list[str]:
     if a.kind != b.kind:
         return []
     def implies(x: Crypto, y: Crypto) -> bool:
-        within = y.start <= x.start and x.end <= y.end
+        if x.opened and y.opened:  # both start at creation: compare the exact moments
+            within = y.opened.replace("Z", "+00:00") <= x.opened.replace("Z", "+00:00") and x.end <= y.end
+        else:
+            within = y.start_full <= x.start and x.end <= y.end
         return within and (x.strike >= y.strike if x.kind == "high" else x.strike <= y.strike)
     if implies(a, b):
         rels.add("a_implies_b")

@@ -135,3 +135,16 @@ def test_covers_all_needs_a_gapless_bracket_set():
     assert not structural.covers_all([sol_less(100), sol_range(110, 120), sol_greater(120)])  # 100-110 missing
     assert not structural.covers_all(full[:-1])  # nothing above 120
     assert not structural.covers_all(full[:-1] + [sol_greater(120, day=27)])  # mixed dates
+
+
+def test_hit_by_windows_start_at_market_creation():
+    def hit(x, created):
+        c = C(f"PM-will-solana-hit-{x}-by-september-30-2026", f"Will Solana hit ${x} by September 30, 2026?", HIT_BY)
+        c.opened_at = created
+        return c
+    early, late = hit(150, "2026-08-20T19:30:49Z"), hit(300, "2026-08-20T19:31:11Z")
+    assert rels(early, late) == ["b_implies_a"]  # $300 within a window inside $150's implies $150
+    assert structural.parse_crypto(hit(150, None)) is None  # creation time unknown: not read
+    reach_day = C("PM-will-solana-reach-160-on-august-20-2026", "Will Solana reach $160 on August 20?",
+                  REACH_MONTH.format(s="SOL").replace("during the month specified in the title (from 00:00 AM ET on the first day to 11:59 PM ET on the last)", "on the date specified in the title, between 12:00 AM ET and 11:59 PM ET"))
+    assert rels(reach_day, early) == []  # Aug 20 starts before creation that afternoon
