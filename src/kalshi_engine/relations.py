@@ -47,13 +47,18 @@ from .fees import taker_fee
 # true missed. 17 pairs is a small sample -- nothing downstream double-
 # checks a relation (no human review, by the project owner's choice), so
 # these err strict; re-calibrate as data/relations_cache.jsonl grows.
-RELATION_THRESHOLD = 0.80
-GATE_THRESHOLD = 0.90
-# Lower gate for pure implications (A => B, B => A, or both), by the
-# project owner's choice (2026-09-24). Still far above the false pairs'
-# 0.03-0.04 in the calibration set, and admits true ones that scored
-# 0.88-0.89. "Not both" / "at least one" keep GATE_THRESHOLD.
-IMPLICATION_GATE_THRESHOLD = 0.80
+#
+# Recalibrated 2026-09-26 on 725 hand-checked pairs outside the family rules
+# (structural.py), with two new questions -- same_source and same_subject.
+# The single same_underlying gate rejected true containments between related
+# measures (pure album sales vs album-equivalent units scored 0.14), so an
+# implication may now pass on EITHER same_underlying >= 0.95 OR same source
+# and same subject both >= 0.90. Old bars on that set: 140 right, 3 wrong;
+# these: 166 right, 0 wrong (5-fold held-out: 166 right, 0 wrong).
+RELATION_THRESHOLD = 0.70
+GATE_THRESHOLD = 0.95
+IMPLICATION_GATE_THRESHOLD = 0.95
+SOURCE_SUBJECT_THRESHOLD = 0.90
 IMPLICATIONS = frozenset({"a_implies_b", "b_implies_a"})
 
 # Minimum guaranteed profit per $1 set, net of fees, worth taking.
@@ -94,7 +99,8 @@ _COMMON = (
 # v2 (2026-09-24): ranked-list guidance for "not both" / "at least one".
 # Seen live: Jev called "Moonshot is the THIRD-best Chinese AI company"
 # and "Zhipu is the SECOND-best" mutually exclusive -- both can be YES.
-PROMPT_VERSION = 2
+# v3 (2026-09-26): same_source / same_subject questions added (see classify).
+PROMPT_VERSION = 3
 STRICTER_IN_CURRENT = frozenset({"mutually_exclusive", "exhaustive"})
 
 _RANKED_LISTS = (
@@ -128,6 +134,19 @@ RELATION_QUESTIONS = {
         "different lists or regions, different people, or different measures, "
         "even if they are closely related or usually move together."
     ),
+    # Alternative gate for implications (classify): true containments between
+    # related measures -- a component vs its total, one day vs the window that
+    # contains it -- fail same_underlying but share a source and a subject.
+    "same_source": (
+        "Do markets A and B settle from the SAME data source -- the same publisher, dataset, official release, "
+        "chart, index or exchange price feed (even if they read different values or dates from it)? Judge ONLY "
+        "from the full resolution rules of both markets as written. Ignore prices."
+    ),
+    "same_subject": (
+        "Are markets A and B about the SAME specific subject -- the same person, company, title, asset, place, "
+        "event or statistic (possibly at different thresholds, dates or positions)? Judge ONLY from the full "
+        "resolution rules of both markets as written. Ignore prices."
+    ),
 }
 
 # Each relation's name when A and B are swapped -- a pair is asked in both
@@ -138,6 +157,8 @@ SWAPPED = {
     "mutually_exclusive": "mutually_exclusive",
     "exhaustive": "exhaustive",
     "same_underlying": "same_underlying",
+    "same_source": "same_source",
+    "same_subject": "same_subject",
 }
 
 
@@ -250,17 +271,23 @@ def relation_state(a: Contract, b: Contract, today: str | None = None) -> str:
 
 def classify(probs: dict[str, float], threshold: float = RELATION_THRESHOLD,
              gate_threshold: float = GATE_THRESHOLD,
-             implication_gate_threshold: float = IMPLICATION_GATE_THRESHOLD) -> tuple[list[str], str | None]:
+             implication_gate_threshold: float = IMPLICATION_GATE_THRESHOLD,
+             source_subject_threshold: float = SOURCE_SUBJECT_THRESHOLD) -> tuple[list[str], str | None]:
     """Relations Jev is confident in, or ([], why not). Requires the
-    same-underlying gate to clear its bar (the lower implication bar when
-    every confident relation is an implication), and rejects relation sets
-    that contradict each other."""
+    same-underlying gate to clear its bar -- or, when every confident
+    relation is an implication, same source AND same subject both clearing
+    theirs -- and rejects relation sets that contradict each other. Verdicts
+    cached before v3 lack same_source/same_subject and so need same_underlying."""
     confident = frozenset(r for r in RELATIONS if probs.get(r, 0.0) >= threshold)
     if not confident:
         return [], None
-    gate = implication_gate_threshold if confident <= IMPLICATIONS else gate_threshold
-    if probs.get("same_underlying", 0.0) < gate:
-        return [], f"same_underlying {probs.get('same_underlying', 0.0):.2f} below threshold"
+    su = probs.get("same_underlying", 0.0)
+    if confident <= IMPLICATIONS:
+        shared = min(probs.get("same_source", 0.0), probs.get("same_subject", 0.0))
+        if su < implication_gate_threshold and shared < source_subject_threshold:
+            return [], f"same_underlying {su:.2f} and same source/subject {shared:.2f} below threshold"
+    elif su < gate_threshold:
+        return [], f"same_underlying {su:.2f} below threshold"
     if confident not in _CONSISTENT:
         return [], f"inconsistent relation set {sorted(confident)}"
     return sorted(confident), None

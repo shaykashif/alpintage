@@ -120,7 +120,12 @@ def needs_reask(verdict: dict | None) -> bool:
     if verdict.get("prompt_version", 1) >= relations.PROMPT_VERSION:
         return False
     rels, _ = relations.classify(verdict["probs"])
-    return bool(relations.STRICTER_IN_CURRENT & set(rels))
+    if relations.STRICTER_IN_CURRENT & set(rels):
+        return True
+    # v3 added same_source/same_subject: a pre-v3 implication that clears the
+    # relation bar but not same_underlying might pass on them -- ask again.
+    probs = verdict["probs"]
+    return "same_source" not in probs and max(probs.get(r, 0.0) for r in relations.IMPLICATIONS) >= relations.RELATION_THRESHOLD
 
 
 def classify_pairs(pairs, cache: dict, max_new: int, workers: int) -> dict[str, dict]:

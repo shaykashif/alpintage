@@ -132,12 +132,20 @@ def test_classify_rejects_when_gate_fails():
     assert rels == [] and "same_underlying" in why
 
 
-def test_implications_use_the_lower_gate_other_relations_do_not():
-    assert relations.classify(_probs(a_implies_b=0.85, same_underlying=0.82))[0] == ["a_implies_b"]
-    assert relations.classify(_probs(a_implies_b=0.9, b_implies_a=0.9, same_underlying=0.82))[0] == ["a_implies_b", "b_implies_a"]
-    assert relations.classify(_probs(b_implies_a=0.85, same_underlying=0.79))[0] == []
-    assert relations.classify(_probs(mutually_exclusive=0.9, same_underlying=0.85))[0] == []
-    assert relations.classify(_probs(exhaustive=0.9, same_underlying=0.85))[0] == []
+def test_implications_pass_on_same_underlying_or_on_same_source_and_subject():
+    assert relations.classify(_probs(a_implies_b=0.75, same_underlying=0.96))[0] == ["a_implies_b"]
+    # Pure album sales -> album-equivalent units: a different measure (same_underlying low),
+    # but the same Luminate source and the same album.
+    album = _probs(b_implies_a=0.8, same_underlying=0.14, same_source=0.95, same_subject=0.93)
+    assert relations.classify(album)[0] == ["b_implies_a"]
+    assert relations.classify({**album, "same_subject": 0.5})[0] == []  # a different album: no
+    assert relations.classify(_probs(a_implies_b=0.9, same_underlying=0.9))[0] == []  # pre-v3 verdict: 0.95 bar
+
+
+def test_not_both_and_at_least_one_still_need_same_underlying():
+    shared = {"same_source": 0.99, "same_subject": 0.99}
+    assert relations.classify({**_probs(mutually_exclusive=0.9, same_underlying=0.9), **shared})[0] == []
+    assert relations.classify(_probs(exhaustive=0.9, same_underlying=0.96))[0] == ["exhaustive"]
 
 
 def test_classify_rejects_contradictions():
