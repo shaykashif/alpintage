@@ -45,7 +45,7 @@ FILLS_PATH = ledger.DEFAULT_LOG_PATH
 SUMMARY_PATH = Path(__file__).resolve().parent.parent / "data" / "paper_pnl_summary.json"
 EQUITY_PATH = Path(__file__).resolve().parent.parent / "data" / "paper_equity.jsonl"
 
-STARTING_CASH_USD = 1000.0
+STARTING_CASH_USD = 10000.0  # matches PaperBroker's starting cash
 REQUEST_PACING_S = 0.15
 
 

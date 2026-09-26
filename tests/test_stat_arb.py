@@ -101,7 +101,7 @@ def test_sell_realizes_pnl_against_fee_inclusive_cost(tmp_path):
     assert pos.qty_open == 0
     assert pos.realized_pnl_usd == pytest.approx(5.42 - 5.18)
     assert pos.meta["venue"] == "odds_api"
-    assert broker.cash_usd == pytest.approx(1000 - 5.18 + 5.42)
+    assert broker.cash_usd == pytest.approx(10000 - 5.18 + 5.42)
 
 
 def test_sell_with_nothing_held_is_a_noop(tmp_path):

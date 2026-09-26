@@ -38,7 +38,7 @@ class PaperBroker:
     def __init__(
         self,
         limits: RiskLimits | None = None,
-        cash_usd: float = 1000.0,
+        cash_usd: float = 10000.0,
         log_path: Path | str = DEFAULT_LOG_PATH,
     ):
         self.limits = limits or RiskLimits()
@@ -52,7 +52,7 @@ class PaperBroker:
     def from_ledger(
         cls,
         limits: RiskLimits | None = None,
-        starting_cash_usd: float = 1000.0,
+        starting_cash_usd: float = 10000.0,
         log_path: Path | str = DEFAULT_LOG_PATH,
         settled: dict[str, float] | None = None,
     ) -> "PaperBroker":

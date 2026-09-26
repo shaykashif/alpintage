@@ -9,12 +9,13 @@ from pathlib import Path
 
 @dataclass
 class RiskLimits:
-    # Paper sizes, raised 2026-09-24 (owner's call) so depth at the best
-    # price -- not an arbitrary cap -- limits a relation arb, as it would live.
-    max_order_notional_usd: float = 100.0
-    max_position_usd: float = 100.0  # per ticker
-    max_total_exposure_usd: float = 1000.0  # sum across all open positions (= starting paper cash)
-    max_daily_loss_usd: float = 200.0
+    # Paper sizes (owner's call): raised 2026-09-24, then again 2026-09-26 so
+    # the wider universe (6x Polymarket, family rules, groups, walking the
+    # book) isn't throttled by a $1k book tied up for weeks until settlement.
+    max_order_notional_usd: float = 500.0
+    max_position_usd: float = 500.0  # per ticker
+    max_total_exposure_usd: float = 10000.0  # sum across all open positions (= starting paper cash)
+    max_daily_loss_usd: float = 1000.0
     # If this file exists, every order is refused. touch it to halt trading,
     # delete it to resume. Checked fresh on every order, not cached.
     kill_switch_path: Path = field(

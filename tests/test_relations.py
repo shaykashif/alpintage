@@ -60,7 +60,7 @@ def test_implication_violation_is_priced_as_an_arb():
     arb = relations.relation_arb("a_implies_b", a, b)
     assert [(l.side, l.price) for l in arb.legs] == [("no", 0.40), ("yes", 0.50)]
     assert arb.tradeable and arb.edge_per_set > 0.05
-    assert arb.qty == 200  # $100 notional cap / $0.50 leg
+    assert arb.qty == 1000  # $500 notional cap / $0.50 leg
 
 
 def test_consistent_prices_are_not_an_arb():

@@ -418,7 +418,7 @@ def resize(arb: Arb, max_qty: int) -> Arb:
     return _evaluate(arb.kind, arb.legs, arb.payout_per_set, 1e12, max(0, min(arb.qty, max_qty)))
 
 
-def relation_arb(relation: str, a: Contract, b: Contract, max_notional_per_leg: float = 100.0, max_qty: int = 500) -> Arb | None:
+def relation_arb(relation: str, a: Contract, b: Contract, max_notional_per_leg: float = 500.0, max_qty: int = 10000) -> Arb | None:
     """The two-leg arbitrage implied by `relation`, priced at the current
     asks. None if a leg has no ask at all."""
     side_a, side_b = _LEGS[relation]
@@ -441,7 +441,7 @@ def missing_quotes(relation: str, a: Contract, b: Contract) -> list[str]:
     return out
 
 
-def me_event_arb(contracts: list[Contract], max_notional_per_leg: float = 100.0, max_qty: int = 500) -> Arb | None:
+def me_event_arb(contracts: list[Contract], max_notional_per_leg: float = 500.0, max_qty: int = 10000) -> Arb | None:
     """The venue says at most one market in this event resolves YES
     (Kalshi's mutually_exclusive flag, Polymarket's negRisk), so NO on any k
     of them pays at least k - 1. If those NOs cost less (after fees), that's
@@ -456,7 +456,7 @@ def me_event_arb(contracts: list[Contract], max_notional_per_leg: float = 100.0,
     return _evaluate("me_event_overround", legs, float(len(legs) - 1), max_notional_per_leg, max_qty)
 
 
-def partition_arb(contracts: list[Contract], max_notional_per_leg: float = 100.0, max_qty: int = 500) -> Arb | None:
+def partition_arb(contracts: list[Contract], max_notional_per_leg: float = 500.0, max_qty: int = 10000) -> Arb | None:
     """YES on every market of a set that covers every outcome exactly once
     (the caller proves that -- structural.covers_all), so the set pays
     exactly $1. Every market must have a YES ask."""
