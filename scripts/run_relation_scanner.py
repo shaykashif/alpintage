@@ -62,7 +62,7 @@ from kalshi_engine.relation_sources import (  # noqa: E402
     fetch_kalshi_events, fetch_polymarket_events, kalshi_contracts, polymarket_contracts, topic_subjects,
 )
 from kalshi_engine.topics import TopicClassifier  # noqa: E402
-from kalshi_engine import structural  # noqa: E402
+from kalshi_engine import semantic, structural  # noqa: E402
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 CACHE_PATH = DATA / "relations_cache.jsonl"
@@ -224,6 +224,7 @@ def main() -> None:
     ap.add_argument("--implication-gate-threshold", type=float, default=relations.IMPLICATION_GATE_THRESHOLD,
                     help="the same, when every confident relation is an implication (If A then B / If B then A)")
     ap.add_argument("--no-polymarket", action="store_true")
+    ap.add_argument("--no-semantic", action="store_true", help="skip meaning-based cross-venue candidates (semantic.py)")
     ap.add_argument("--paper", action="store_true", help="paper-trade every tradeable arb (all legs or none)")
     args = ap.parse_args()
 
@@ -268,6 +269,22 @@ def main() -> None:
             seen.add(k)
             pairs.append((a, b, 0.0))
             rule_verdicts[k] = structural.judge(a, b)
+    # Cross-venue pairs by meaning (semantic.py): same event, different wording.
+    if not args.no_semantic:
+        try:
+            added = 0
+            for a, b, sim in semantic.cross_venue_pairs(contracts):
+                k = relations.pair_key(a, b)
+                if k not in seen:
+                    seen.add(k)
+                    pairs.append((a, b, sim))
+                    added += 1
+                    v = structural.judge(a, b)
+                    if v:
+                        rule_verdicts[k] = v
+            print(f"{added} more cross-venue candidate pair(s) by meaning")
+        except Exception as exc:  # noqa: BLE001 -- a broken embedding step mustn't stop the scan
+            print(f"semantic matching skipped: {exc}")
     by_family: dict[str, int] = {}
     for v in rule_verdicts.values():
         by_family[v.family] = by_family.get(v.family, 0) + bool(v.relations)
