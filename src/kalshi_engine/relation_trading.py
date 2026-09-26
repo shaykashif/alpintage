@@ -137,7 +137,13 @@ def settled_payouts(path: Path = SUMMARY_PATH) -> dict[str, float]:
         summary = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
-    return {p["ticker"]: p.get("payout", 0.0) for p in summary.get("positions", []) if p.get("status") == "settled"}
+    # Summed per ticker: the broker holds one position per market, which may
+    # be scored as several sets.
+    out: dict[str, float] = {}
+    for p in summary.get("positions", []):
+        if p.get("status") == "settled":
+            out[p["ticker"]] = out.get(p["ticker"], 0.0) + p.get("payout", 0.0)
+    return out
 
 
 def arb_group(arb: relations.Arb) -> str:
@@ -147,22 +153,33 @@ def arb_group(arb: relations.Arb) -> str:
 
 @dataclass
 class HeldBook:
-    """Which set each open relation-arb leg belongs to, and the edge each
-    set was last entered at -- what execute() needs to tell a top-up of a
-    held set from a new set that would share a leg with it."""
-    group_of: dict[str, str | None] = field(default_factory=dict)  # held ticker -> arb_group
+    """Which sets each held market is a leg of, the side it's held on, and
+    the edge each set was last entered at -- what execute() needs to tell a
+    top-up of a held set from a new set, and to refuse a new set that would
+    hold a market on the opposite side."""
+    groups_of: dict[str, set[str]] = field(default_factory=dict)  # held ticker -> its sets' arb_groups
+    side_of: dict[str, str] = field(default_factory=dict)  # held ticker -> "yes" | "no"
     last_edge: dict[str, float] = field(default_factory=dict)  # arb_group -> edge/set at its latest entry
 
     @classmethod
     def from_broker(cls, broker: PaperBroker) -> HeldBook:
-        """Only tickers the broker still holds (it already dropped settled ones)."""
+        """Only markets the broker still holds (it already dropped settled ones)."""
         rows = ledger.load_rows(broker.log_path)
-        positions = ledger.build_positions(rows)
-        book = cls({t: positions[t].meta.get("arb_group") if t in positions else None for t in broker.positions})
+        book = cls(side_of={t: p["side"] for t, p in broker.positions.items()})
+        for p in ledger.build_positions(rows, by_set=True).values():
+            g = p.meta.get("arb_group")
+            if p.ticker in broker.positions and p.qty_open > 0 and g:
+                book.groups_of.setdefault(p.ticker, set()).add(g)
+        for t in broker.positions:
+            book.groups_of.setdefault(t, set())  # held outside any set (another strategy)
         for r in rows:
             if r.get("event") == "fill" and r.get("arb_group") and r.get("edge") is not None:
                 book.last_edge[r["arb_group"]] = r["edge"]
         return book
+
+    def add(self, ticker: str, side: str, group: str) -> None:
+        self.groups_of.setdefault(ticker, set()).add(group)
+        self.side_of[ticker] = side
 
 
 # A top-up must beat the set's last entry by this much per set: re-buying
@@ -178,15 +195,18 @@ def execute(arb: relations.Arb, broker: PaperBroker, held: HeldBook, verdict: di
 
     A set already held can be topped up -- more of the same legs, when the
     new edge beats the last entry's by TOPUP_MIN_IMPROVEMENT -- since every
-    extra set pays out on its own. A new set that shares a leg with a
-    DIFFERENT held set is still skipped: one ledger position per market
-    can't be split between two sets."""
+    extra set pays out on its own. A new set may share a market with other
+    held sets (each set is hedged on its own; the scorer and exits track
+    them per set), but only on the SAME side: the broker keeps one position
+    per market, which can't be long YES and NO at once."""
     tickers = [l.contract.ticker for l in arb.legs]
     group = arb_group(arb)
-    held_legs = [t for t in tickers if t in held.group_of]
-    if held_legs:
-        if len(held_legs) != len(tickers) or any(held.group_of[t] != group for t in tickers):
-            return False, "a leg is held in a different set"
+    for leg in arb.legs:
+        held_side = held.side_of.get(leg.contract.ticker)
+        if held_side is not None and held_side != leg.side:
+            return False, f"{leg.contract.ticker} is held on the other side"
+    topup = all(group in held.groups_of.get(t, set()) for t in tickers)
+    if topup:
         last = held.last_edge.get(group)
         if last is not None and arb.edge_per_set < last + TOPUP_MIN_IMPROVEMENT:
             return False, f"already hold this set (entered at {last:.3f}/set)"
@@ -212,7 +232,6 @@ def execute(arb: relations.Arb, broker: PaperBroker, held: HeldBook, verdict: di
     if broker.realized_pnl_today_usd <= -broker.limits.max_daily_loss_usd:
         return False, "daily loss limit reached"
 
-    topup = bool(held_legs)
     for leg in arb.legs:
         fee = None if leg.contract.venue == "kalshi" else leg.contract.fee(arb.qty, leg.price)
         broker.buy(
@@ -222,7 +241,7 @@ def execute(arb: relations.Arb, broker: PaperBroker, held: HeldBook, verdict: di
             payout_per_set=arb.payout_per_set, topup=topup,
             edge=arb.edge_per_set, jev_probs=verdict["probs"] if verdict else None,
         )
-        held.group_of[leg.contract.ticker] = group
+        held.add(leg.contract.ticker, leg.side, group)
     held.last_edge[group] = arb.edge_per_set
     return True, f"topped up x{arb.qty}" if topup else "filled"
 
@@ -248,7 +267,7 @@ def held_sets(rows: list[dict]) -> list[HeldSet]:
     """Every relation-arb set still held whole: all its legs open, in equal
     quantity, never partly sold. A set with a settled leg drops out at the
     watcher on its own -- a closed market has no quote to sell into."""
-    positions = ledger.build_positions(rows)
+    positions = ledger.build_positions(rows, by_set=True)
     by_group: dict[str, list[ledger.Position]] = {}
     for p in positions.values():
         g = p.meta.get("arb_group")

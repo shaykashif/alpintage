@@ -292,7 +292,7 @@ def main() -> None:
         if args.paper:
             broker = PaperBroker.from_ledger(settled=settled_payouts())
             held = HeldBook.from_broker(broker)
-            print(f"[book] cash ${broker.cash_usd:.2f}, {len(held.group_of)} open position(s)")
+            print(f"[book] cash ${broker.cash_usd:.2f}, {len(held.side_of)} open position(s)")
         for arb, verdict in opportunities:
             row = arb_row(arb, verdict)
             legs_txt = " + ".join(f"{l.side.upper()} {l.contract.ticker} @{l.price:.2f}" for l in arb.legs)

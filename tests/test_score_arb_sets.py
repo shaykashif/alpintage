@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -81,3 +82,22 @@ def test_unpriced_leg_still_gets_the_guarantee():
 def test_polymarket_exit_fee_uses_its_own_schedule():
     assert spf.exit_fee({"fee_rate": 0.0}, 10, 0.5) == 0.0
     assert spf.exit_fee({"fee_rate": 0.02, "fee_exponent": 1.0}, 10, 0.5) == 0.05
+
+
+def test_two_sets_sharing_a_market_are_scored_separately(tmp_path, monkeypatch):
+    g1, g2 = "mutually_exclusive:PM-a|PM-b", "mutually_exclusive:PM-a|PM-c"
+    fills = [fill("PM-a", 0.20, arb_group=g1), fill("PM-b", 0.77, arb_group=g1),
+             fill("PM-a", 0.20, qty=5, arb_group=g2), fill("PM-c", 0.70, qty=5, arb_group=g2)]
+    positions = ledger.build_positions(fills, by_set=True)
+    markets = {"PM-a": {"status": "settled", "result": "no"}, "PM-b": pm(0.5, 0.6), "PM-c": pm(0.5, 0.6)}
+    rows = [spf.score_position(p, markets[p.ticker], k) for k, p in positions.items()]
+    sets = {s["arb_group"]: s for s in spf.mark_arb_sets(rows, positions)}
+    # PM-a's NO paid $1 a contract in each set, so what's left open owes nothing more.
+    assert sets[g1]["guaranteed_payout"] == 0.0 and sets[g2]["guaranteed_payout"] == 0.0
+    settled = {r["key"]: r["payout"] for r in rows if r["status"] == "settled"}
+    assert settled == {f"PM-a@{g1}": 10.0, f"PM-a@{g2}": 5.0}
+
+    from kalshi_engine import relation_trading as rt
+    summary = tmp_path / "s.json"
+    summary.write_text(json.dumps({"positions": rows}))
+    assert rt.settled_payouts(summary) == {"PM-a": 15.0}  # the broker's one PM-a position gets both

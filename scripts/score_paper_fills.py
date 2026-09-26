@@ -88,10 +88,11 @@ def exit_fee(market: dict, qty: float, price: float) -> float:
     return float(taker_fee(qty, price))
 
 
-def score_position(pos: ledger.Position, market: dict | None) -> dict:
+def score_position(pos: ledger.Position, market: dict | None, key: str | None = None) -> dict:
     """One position's row for the summary. `market` is None when the
     position was fully exited (no fetch needed) or the fetch failed."""
     row = {
+        "key": key or pos.ticker,
         "ticker": pos.ticker, "strategy": pos.strategy, "side": pos.side,
         "venue": pos.meta.get("venue"),
         "qty_bought": pos.qty_bought, "qty_open": pos.qty_open,
@@ -160,13 +161,13 @@ def mark_arb_sets(rows: list[dict], positions: dict[str, ledger.Position]) -> li
         if not open_legs or any(r["status"] == "exited" or r["qty_open"] != r["qty_bought"] for r in legs):
             continue
         qty = legs[0]["qty_bought"]
-        per_set = payout_per_set(positions[legs[0]["ticker"]], len(legs))
+        per_set = payout_per_set(positions[legs[0]["key"]], len(legs))
         if per_set is None or any(r["qty_bought"] != qty for r in legs):
             continue
 
         settled_paid = sum(r.get("payout", 0.0) for r in legs if r["status"] == "settled")
         guaranteed = max(0.0, per_set * qty - settled_paid)
-        open_cost = sum(positions[r["ticker"]].open_cost_usd for r in open_legs)
+        open_cost = sum(positions[r["key"]].open_cost_usd for r in open_legs)
         # A leg with no fetched market has no sale value; the guarantee
         # doesn't depend on prices, so it still holds.
         priced = all(r["status"] == "open" for r in open_legs)
@@ -175,7 +176,7 @@ def mark_arb_sets(rows: list[dict], positions: dict[str, ledger.Position]) -> li
         unrealized = value - open_cost
 
         for r in open_legs:
-            share = positions[r["ticker"]].open_cost_usd / open_cost if open_cost else 1 / len(open_legs)
+            share = positions[r["key"]].open_cost_usd / open_cost if open_cost else 1 / len(open_legs)
             r["leg_unrealized_pnl"] = r["unrealized_pnl"]
             r["unrealized_pnl"] = round(unrealized * share, 4)
             if r["status"] == "unknown":
@@ -183,7 +184,7 @@ def mark_arb_sets(rows: list[dict], positions: dict[str, ledger.Position]) -> li
 
         sets.append({
             "arb_group": group,
-            "relation": positions[legs[0]["ticker"]].meta.get("relation"),
+            "relation": positions[legs[0]["key"]].meta.get("relation"),
             "tickers": [r["ticker"] for r in legs],
             "qty": qty,
             "open_cost": round(open_cost, 4),
@@ -234,21 +235,25 @@ def summarize(rows: list[dict], generated_at: str, arb_sets: list[dict] | None =
 
 def main() -> None:
     generated_at = datetime.now(timezone.utc).isoformat()
-    positions = ledger.build_positions(ledger.load_rows(FILLS_PATH))
+    # One position per relation-arb set (a market can be a leg of several).
+    positions = ledger.build_positions(ledger.load_rows(FILLS_PATH), by_set=True)
     if not positions:
         print(f"no paper fills yet at {FILLS_PATH}")
     client = PublicClient() if any(p.qty_open > 0 for p in positions.values()) else None
 
-    rows = []
-    for ticker, pos in positions.items():
+    rows, markets = [], {}
+    for key, pos in positions.items():
         market = None
         if pos.qty_open > 0:
-            try:
-                market = fetch_market(client, ticker)
-            except Exception as exc:  # noqa: BLE001
-                print(f"  {ticker}: could not fetch ({exc})")
-            time.sleep(REQUEST_PACING_S)
-        rows.append(score_position(pos, market))
+            if pos.ticker not in markets:  # fetch each market once, however many sets hold it
+                try:
+                    markets[pos.ticker] = fetch_market(client, pos.ticker)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  {pos.ticker}: could not fetch ({exc})")
+                    markets[pos.ticker] = None
+                time.sleep(REQUEST_PACING_S)
+            market = markets[pos.ticker]
+        rows.append(score_position(pos, market, key))
 
     arb_sets = mark_arb_sets(rows, positions)
     for row in rows:

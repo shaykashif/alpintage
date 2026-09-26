@@ -90,16 +90,26 @@ def venue_of(row: dict) -> str | None:
     return None
 
 
-def build_positions(rows: list[dict]) -> dict[str, Position]:
+def position_key(row: dict, by_set: bool) -> str:
+    """The ticker, or with `by_set` "<ticker>@<arb_group>" for a relation-arb
+    row, so one market held in two sets is two positions."""
+    return f"{row['ticker']}@{row['arb_group']}" if by_set and row.get("arb_group") else row["ticker"]
+
+
+def build_positions(rows: list[dict], by_set: bool = False) -> dict[str, Position]:
+    """Positions keyed by ticker (what the broker, cash and risk limits see),
+    or with `by_set` split per relation-arb set (what the scorer, top-ups
+    and early exits need -- a market can be a leg of more than one set)."""
     positions: dict[str, Position] = {}
     for row in rows:
         event = row.get("event")
         if event not in ("fill", "sell"):
             continue
         ticker = row["ticker"]
-        pos = positions.get(ticker)
+        key = position_key(row, by_set)
+        pos = positions.get(key)
         if pos is None:
-            pos = positions[ticker] = Position(ticker=ticker, side=row.get("side", "yes"), strategy=strategy_of(row))
+            pos = positions[key] = Position(ticker=ticker, side=row.get("side", "yes"), strategy=strategy_of(row))
             pos.first_ts = row.get("ts")
         pos.last_ts = row.get("ts")
 

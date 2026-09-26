@@ -207,10 +207,29 @@ def test_execute_buys_nothing_if_the_whole_set_would_breach_exposure(tmp_path):
     assert broker.positions == {}  # never half a set
 
 
-def test_execute_skips_a_set_sharing_a_leg_with_a_different_held_set(tmp_path):
+def test_execute_refuses_a_market_held_on_the_other_side(tmp_path):
     broker = PaperBroker(limits=_limits(tmp_path), log_path=tmp_path / "f.jsonl")
-    ok, why = rrs.execute(_arb(), broker, HeldBook({"A": "mutually_exclusive:A|OTHER"}), None)
-    assert not ok and "different set" in why and broker.positions == {}
+    held = HeldBook({"A": {"mutually_exclusive:A|OTHER"}}, {"A": "yes"})  # _arb() buys NO A
+    ok, why = rrs.execute(_arb(), broker, held, None)
+    assert not ok and "other side" in why and broker.positions == {}
+
+
+def test_a_new_set_can_share_a_market_with_a_held_set(tmp_path):
+    # A+B held; A+D is a different set sharing NO A. Each set is hedged on its own.
+    broker = PaperBroker(limits=_limits(tmp_path), log_path=tmp_path / "f.jsonl")
+    assert rrs.execute(_me_arb(0.20, 0.77, depth=10), broker, HeldBook(), None)[0]
+    a = C("A", 0.80, 0.81, bid_size=10)
+    d = C("D", 0.30, 0.31, bid_size=10)  # NO D at 0.70: 0.20 + 0.70 = 90c for $1
+    ok, why = rrs.execute(relations.relation_arb("mutually_exclusive", a, d), broker, HeldBook.from_broker(broker), None)
+    assert ok and why == "filled" and broker.positions["A"]["qty"] == 20
+
+    from kalshi_engine import relation_trading as rt
+    sets = {s.group: s for s in rt.held_sets(ledger.load_rows(tmp_path / "f.jsonl"))}
+    assert set(sets) == {"mutually_exclusive:A|B", "mutually_exclusive:A|D"}
+    assert all(s.qty == 10 for s in sets.values())
+    by_set = ledger.build_positions(ledger.load_rows(tmp_path / "f.jsonl"), by_set=True)
+    assert sorted(by_set) == ["A@mutually_exclusive:A|B", "A@mutually_exclusive:A|D",
+                              "B@mutually_exclusive:A|B", "D@mutually_exclusive:A|D"]
 
 
 def _me_arb(no_a_ask, no_b_ask, depth=1000.0):
