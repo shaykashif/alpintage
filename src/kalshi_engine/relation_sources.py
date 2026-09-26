@@ -210,55 +210,57 @@ def polymarket_context(pm: dict) -> str:
     ])
 
 
-def fetch_polymarket_events(horizon_days: float = 21.0, window_days: float = 2.0, max_offset: int = 3000,
-                            page_size: int = 100) -> list[VenueEvent]:
+SPORTS_TAG_ID = 1  # Gamma's "Sports" tag (GET /tags/slug/sports)
+
+
+def fetch_polymarket_events(horizon_days: float = 21.0, page_size: int = 100) -> list[VenueEvent]:
     """Plain Yes/No, non-sports markets ending in the horizon, grouped by
     their Polymarket event.
 
-    Gamma refuses offsets past ~2,000 per query (seen live, HTTP 422), which
-    silently capped a whole-horizon fetch at the 2,000 highest-volume rows.
-    So the horizon is walked in `window_days` slices, each with its own
-    2,000-row allowance, and markets are de-duplicated by slug."""
+    Walks GET /events/keyset (cursor pagination, no offset ceiling) with
+    sports excluded server-side. The old /markets walk was sorted by volume
+    and capped at ~2,000 rows per window; sports were 85-98% of those rows,
+    so most non-sports markets were never seen (measured 2026-09-26: ~850
+    in scope; this walk finds ~9,000 open non-sports Yes/No markets in ~40 s)."""
     now = datetime.now(timezone.utc)
     horizon = now + timedelta(days=horizon_days)
+    params = {"closed": "false", "active": "true", "limit": page_size, "exclude_tag_id": SPORTS_TAG_ID,
+              "end_date_min": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "end_date_max": horizon.strftime("%Y-%m-%dT%H:%M:%SZ")}
     by_event: dict[str, VenueEvent] = {}
     seen: set[str] = set()
-    start = now
-    while start < horizon:
-        end = min(horizon, start + timedelta(days=window_days))
-        for offset in range(0, max_offset, page_size):
-            r = httpx.get(f"{POLY_BASE}/markets", params={
-                "closed": "false", "active": "true", "limit": page_size, "offset": offset,
-                "order": "volume24hr", "ascending": "false",
-                "end_date_min": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "end_date_max": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }, timeout=30.0)
-            if r.status_code == 422:
-                break  # this window's offset ceiling: move on to the next window
-            r.raise_for_status()
-            page = r.json()
-            if not page:
-                break
-            for pm in page:
-                if pm["slug"] in seen or _is_sports(pm) or not pm.get("acceptingOrders", True):
+    cursor = None
+    while True:
+        r = httpx.get(f"{POLY_BASE}/events/keyset", params={**params, **({"after_cursor": cursor} if cursor else {})},
+                      timeout=30.0)
+        r.raise_for_status()
+        body = r.json()
+        for event in body.get("events") or []:
+            header = {k: v for k, v in event.items() if k != "markets"}
+            for pm in event.get("markets") or []:
+                if pm.get("slug") in seen or pm.get("closed") or _is_sports(pm) or not pm.get("acceptingOrders", True):
                     continue
-                seen.add(pm["slug"])
+                end = pm.get("endDate")
+                if end and end > horizon.strftime("%Y-%m-%dT%H:%M:%SZ"):
+                    continue
                 try:
                     outcomes = json.loads(pm.get("outcomes") or "[]")
                 except json.JSONDecodeError:
                     continue
                 if [o.lower() for o in outcomes] != ["yes", "no"]:
                     continue  # keep plain Yes/No markets: YES has one unambiguous meaning
-                event = (pm.get("events") or [{}])[0]
+                seen.add(pm["slug"])
+                pm.setdefault("events", [header])  # the shape GET /markets returns, which the rest of the code reads
                 eid = event.get("slug") or pm["slug"]
                 ve = by_event.get(eid)
                 if ve is None:
-                    ve = by_event[eid] = VenueEvent("polymarket", eid, event.get("title") or pm.get("question", ""), pm.get("feeType"), event)
+                    ve = by_event[eid] = VenueEvent("polymarket", eid, event.get("title") or pm.get("question", ""),
+                                                    pm.get("feeType"), header)
                 ve.markets.append(pm)
-            if len(page) < page_size:
-                break
-            time.sleep(PAGE_PACING_S)
-        start = end
+        cursor = body.get("next_cursor")
+        if not cursor or not body.get("events"):
+            break
+        time.sleep(PAGE_PACING_S)
     return list(by_event.values())
 
 
