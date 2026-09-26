@@ -148,3 +148,39 @@ def test_hit_by_windows_start_at_market_creation():
     reach_day = C("PM-will-solana-reach-160-on-august-20-2026", "Will Solana reach $160 on August 20?",
                   REACH_MONTH.format(s="SOL").replace("during the month specified in the title (from 00:00 AM ET on the first day to 11:59 PM ET on the last)", "on the date specified in the title, between 12:00 AM ET and 11:59 PM ET"))
     assert rels(reach_day, early) == []  # Aug 20 starts before creation that afternoon
+
+
+def test_econ_above_vs_exactly_same_release():
+    bls = "as reported by the Bureau of Labor Statistics"
+    above = C("KXCPIYOY-26SEP-T3.0", "Will the rate of CPI inflation be above 3.0% ...", f"increases by more than 3.0% ({bls})")
+    exact = C("KXECONSTATCPIYOY-26SEP-T3.0", "CPI year-over-year in Sep 2026? -- Exactly 3.0%", "exactly 3.0%")
+    exact_hi = C("KXECONSTATCPIYOY-26SEP-T3.2", "CPI year-over-year in Sep 2026? -- Exactly 3.2%", "exactly 3.2%")
+    other_month = C("KXECONSTATCPIYOY-26OCT-T3.2", "CPI year-over-year in Oct 2026? -- Exactly 3.2%", "exactly 3.2%")
+    assert rels(above, exact) == ["mutually_exclusive"]  # exactly 3.0 is not above 3.0
+    assert rels(exact_hi, above) == ["a_implies_b"]
+    assert rels(above, other_month) is None  # different month: not the rules' call
+
+
+def test_ism_kalshi_vs_polymarket_brackets():
+    k = C("KXISMPMI-26SEP-51", "ISM Manufacturing PMI in Sep 2026? -- At least 51", "is at least 51, then the market resolves to Yes.")
+    pm = C("PM-will-ism-manufacturing-pmi-be-between-55pt0-and-55pt9-in-september", "Will ISM Manufacturing PMI be between 55.0 and 55.9 in September?",
+           "ISM Manufacturing PMI for September 2026 ... resolve to the bracket containing ... https://www.ismworld.org/")
+    low = C("PM-will-ism-manufacturing-pmi-be-between-49pt0-and-49pt9-in-september", "Will ISM Manufacturing PMI be between 49.0 and 49.9 in September?", pm.context)
+    serv = C("PM-will-ism-services-pmi-be-between-52pt0-and-52pt9-in-september", "Will ISM Services PMI be between 52.0 and 52.9 in September?", pm.context)
+    assert rels(k, pm) == ["b_implies_a"]
+    assert rels(k, low) == ["mutually_exclusive"]
+    assert rels(k, serv) is None  # manufacturing vs services
+
+
+def test_treasury_daily_inside_window():
+    window = C("KX30YRDIRHM-26SEP30H-T5.45", "Will the 30Y U.S. Treasury yield be above 5.45% by Sep 30, 2026?",
+               "If the daily published par yield for the 30Y U.S. Treasury is above 5.45% on any business day between Sep 9, 2026 and Sep 30, 2026 ... Daily Treasury Par Yield Curve Rate")
+    low = C("KX30YRDIRLM-26SEP30L-T5.25", "Will the 30Y U.S. Treasury yield be below 5.25% by Sep 30, 2026?",
+            "If the daily published par yield for the 30Y U.S. Treasury is below 5.25% on any business day between Sep 9, 2026 and Sep 30, 2026 ... Daily Treasury Par Yield Curve Rate")
+    def day(x, d=25, tenor=30):
+        return C(f"KXUST{tenor}A-26SEP{d}-T{x}", f"Will the {tenor}Y U.S. Treasury yield be above {x}% on Sep {d}, 2026?",
+                 f"If the par yield for the {tenor}Y U.S. Treasury is above {x}% on Sep {d}, 2026, then the market resolves to Yes.")
+    assert rels(window, day("5.45")) == ["b_implies_a"]
+    assert rels(window, day("5.40")) == []  # the day's bar is lower than the window's
+    assert rels(low, day("5.24", d=30)) == ["exhaustive"]
+    assert rels(window, day("5.45", tenor=10)) is None or rels(window, day("5.45", tenor=10)) == []

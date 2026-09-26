@@ -14,6 +14,11 @@ families themselves are regular enough to judge exactly:
              point in a week, at any point in a month.
   - album    Kalshi Luminate pure album sales vs album-equivalent units
              (pure sales are a component of equivalent units).
+  - econ     Kalshi BLS releases (CPI, core, YoY, U-3): "above X" vs "exactly
+             Y" for the same number and month; ISM PMIs across venues
+             (Kalshi at-least/above vs Polymarket one-decimal brackets).
+  - treasury Kalshi daily par yield "above X on D" vs "above/below X on any
+             business day" in a window containing D, same tenor.
   - rank     chart positions (#1, #2, top N) -- Netflix, Billboard, YouTube,
              App Store: same title at two ranks of one chart can't both
              happen; #N implies top M >= N; DIFFERENT titles at different
@@ -254,6 +259,145 @@ def _crypto(a: Crypto, b: Crypto) -> list[str]:
     return sorted(rels)
 
 
+# ---- economic releases ------------------------------------------------------------
+
+@dataclass
+class Measure:
+    """A condition on one published number: its value lies in [lo, hi]
+    (with inclusivity), for `metric` in `period`. Reuses the interval logic."""
+    metric: str
+    period: str
+    lo: float = -INF
+    lo_in: bool = False
+    hi: float = INF
+    hi_in: bool = False
+
+
+# Kalshi series -> (metric, "above" strictly | "exactly"). Same venue, same
+# BLS release, so a delayed release delays both (unlike Polymarket, whose
+# BLS markets fall back to prior data -- those stay Jev's call).
+_KALSHI_ECON = {
+    "KXCPI": ("cpi_mom", "above"), "KXECONSTATCPI": ("cpi_mom", "exactly"),
+    "KXCPICORE": ("core_mom", "above"), "KXECONSTATCPICORE": ("core_mom", "exactly"),
+    "KXCPIYOY": ("cpi_yoy", "above"), "KXECONSTATCPIYOY": ("cpi_yoy", "exactly"),
+    "KXCPICOREYOY": ("core_yoy", "above"), "KXECONSTATCORECPIYOY": ("core_yoy", "exactly"),
+    "KXU3": ("u3", "above"), "KXECONSTATU3": ("u3", "exactly"),
+}
+_MONTH_YEAR = r"(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w* (20\d\d)"
+
+
+def _period(text: str) -> str | None:
+    m = re.search(_MONTH_YEAR, text)
+    if not m:
+        return None
+    mo = MONTHS.get(m.group(1).lower()) or MON3.get(m.group(1).lower()[:3])
+    return f"{m.group(2)}-{mo:02d}" if mo else None
+
+
+def parse_measure(c: Contract) -> Measure | None:
+    rules = c.context or ""
+    if c.venue == "kalshi":
+        series = c.ticker.split("-")[0]
+        if series in _KALSHI_ECON:
+            metric, how = _KALSHI_ECON[series]
+            m = re.search(r"-(\d{2})([A-Z]{3})-T(-?\d+(?:\.\d+)?)$", c.ticker)
+            if not m or m.group(2).lower() not in MON3 or "Bureau of Labor Statistics" not in rules and how == "above":
+                return None
+            period = f"20{m.group(1)}-{MON3[m.group(2).lower()]:02d}"
+            x = float(m.group(3))
+            return Measure(metric, period, x, False) if how == "above" else Measure(metric, period, x, True, x, True)
+        if series in ("KXISMPMI", "KXUSISMSERV"):
+            metric = "ism_mfg" if series == "KXISMPMI" else "ism_serv"
+            period = _period(c.title) or _period(rules)
+            m = re.search(r"-T?(\d+(?:\.\d+)?)$", c.ticker)
+            if not period or not m:
+                return None
+            if "is at least" in rules:
+                return Measure(metric, period, float(m.group(1)), True)
+            if re.search(r"\bis above\b", rules):
+                return Measure(metric, period, float(m.group(1)), False)
+        return None
+    if c.venue == "polymarket" and "ismworld.org" in rules:
+        metric = "ism_mfg" if "Manufacturing" in c.title else "ism_serv" if "Services" in c.title else None
+        period = _period(rules)
+        if not metric or not period or "bracket containing" not in rules:
+            return None
+        m = re.search(r"between (\d+(?:\.\d+)?) and (\d+(?:\.\d+)?)", c.title)
+        if m:  # one-decimal brackets, both ends included
+            return Measure(metric, period, float(m.group(1)), True, float(m.group(2)), True)
+    return None
+
+
+def _measure(a: Measure, b: Measure) -> list[str] | None:
+    if a.metric != b.metric or a.period != b.period:
+        return None
+    rels: set[str] = set()
+    if _subset(a, b):
+        rels.add("a_implies_b")
+    if _subset(b, a):
+        rels.add("b_implies_a")
+    if _disjoint(a, b):
+        rels.add("mutually_exclusive")
+    if _covers_line(a, b):
+        rels.add("exhaustive")
+    return sorted(rels)
+
+
+# ---- Treasury par yields (Kalshi) ---------------------------------------------------
+
+@dataclass
+class Yield:
+    tenor: str  # "10", "30", ...
+    kind: str  # "above" | "below"
+    strike: float
+    start: date
+    end: date
+
+
+def parse_yield(c: Contract) -> Yield | None:
+    if c.venue != "kalshi" or "Treasury" not in c.title:
+        return None
+    rules = c.context or ""
+    m = re.match(r"^KX(?:UST(\d+)A[DM]?|(\d+)YRDIR[HL]M)-", c.ticker)
+    s = re.search(r"-T(\d+(?:\.\d+)?)$", c.ticker)
+    if not m or not s:
+        return None
+    tenor = m.group(1) or m.group(2)
+    if f"{tenor}Y U.S. Treasury" not in rules:
+        return None
+    w = re.search(r"is (above|below) [\d.]+% on any business day between (\w{3}) (\d{1,2}), (\d{4}) and (\w{3}) (\d{1,2}), (\d{4})", rules)
+    if w and "Daily Treasury Par Yield Curve Rate" in rules:
+        start = _date(w.group(2), w.group(3), int(w.group(4)))
+        end = _date(w.group(5), w.group(6), int(w.group(7)))
+        return Yield(tenor, w.group(1), float(s.group(1)), start, end) if start and end else None
+    d = re.search(r"par yield for the \d+Y U.S. Treasury is (above|below) [\d.]+% on (\w{3}) (\d{1,2}), (\d{4})", rules)
+    if d:
+        day = _date(d.group(2), d.group(3), int(d.group(4)))
+        return Yield(tenor, d.group(1), float(s.group(1)), day, day) if day else None
+    return None
+
+
+def _yield(a: Yield, b: Yield) -> list[str] | None:
+    if a.tenor != b.tenor:
+        return []  # different tenors: separate curves
+    rels: set[str] = set()
+
+    def implies(x: Yield, y: Yield) -> bool:  # x YES => y YES
+        if x.kind != y.kind or not (y.start <= x.start and x.end <= y.end):
+            return False
+        return x.strike >= y.strike if x.kind == "above" else x.strike <= y.strike
+    if implies(a, b):
+        rels.add("a_implies_b")
+    if implies(b, a):
+        rels.add("b_implies_a")
+    # "above Y on day D" NO means the day's yield <= Y; if Y < X that day is
+    # "below X", so a window containing D that asks "below X" must be YES.
+    for x, y in ((a, b), (b, a)):
+        if x.kind == "above" and y.kind == "below" and x.start == x.end and y.start <= x.start <= y.end and x.strike < y.strike:
+            rels.add("exhaustive")
+    return sorted(rels)
+
+
 # ---- YouTube views (Kalshi) ------------------------------------------------------
 
 @dataclass
@@ -442,6 +586,14 @@ def judge(a: Contract, b: Contract) -> Verdict | None:
     v = _album(a, b)
     if v:
         return v
+    ma, mb = parse_measure(a), parse_measure(b)
+    if ma and mb:
+        rels = _measure(ma, mb)
+        if rels is not None:
+            return Verdict(rels, "econ", "same published number: interval logic on its value")
+    ua, ub = parse_yield(a), parse_yield(b)
+    if ua and ub:
+        return Verdict(_yield(ua, ub), "treasury", "daily par yield inside the window, same tenor")
     ra, rb = parse_rank(a), parse_rank(b)
     if ra and rb:
         return _rank(ra, rb)
@@ -474,6 +626,12 @@ def family_key(c: Contract) -> str | None:
     m = re.match(r"^(?:KXPUREALBUMS|KXALBUMEQUIV)-([A-Z0-9]+)-", c.ticker)
     if m and c.venue == "kalshi":
         return f"album|{m.group(1)}"
+    me = parse_measure(c)
+    if me:
+        return f"econ|{me.metric}|{me.period}"
+    y = parse_yield(c)
+    if y:
+        return f"ust|{y.tenor}"
     rk = parse_rank(c)
     if rk and rk.chart:
         return f"rank|{rk.subject}"
