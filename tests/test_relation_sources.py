@@ -40,3 +40,28 @@ def test_polymarket_fetch_walks_windows_dedupes_and_survives_422(monkeypatch):
     slugs = sorted(m["slug"] for e in events for m in e.markets)
     assert slugs == ["a", "b", "d"]  # deduped, sports and non-Yes/No dropped
     assert {e.event_id for e in events} == {"ev", "ev2"}
+
+
+def test_closed_polymarket_market_is_found_on_retry(monkeypatch):
+    # Gamma omits closed markets from a plain slug lookup.
+    from kalshi_engine import relation_sources as rs
+    calls = []
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.body
+
+    def fake_get(url, params, timeout):
+        calls.append(params)
+        return Resp([{"slug": "x", "closed": True, "outcomePrices": '["0", "1"]'}] if params.get("closed") else [])
+
+    monkeypatch.setattr(rs.httpx, "get", fake_get)
+    pm = rs.fetch_polymarket_market("x")
+    assert pm["slug"] == "x" and [c.get("closed") for c in calls] == [None, "true"]
+    assert rs.polymarket_as_kalshi_shape(pm)["result"] == "no"

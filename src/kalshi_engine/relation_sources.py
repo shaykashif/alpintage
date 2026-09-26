@@ -367,11 +367,18 @@ def fetch_polymarket_quotes(slugs: list[str]) -> dict[str, Quote]:
 
 
 def fetch_polymarket_market(slug: str) -> dict | None:
-    """One Polymarket market by slug, for scoring a paper position."""
-    r = httpx.get(f"{POLY_BASE}/markets", params={"slug": slug}, timeout=20.0)
-    r.raise_for_status()
-    rows = r.json()
-    return rows[0] if rows else None
+    """One Polymarket market by slug, for scoring a paper position. Gamma
+    leaves closed markets out of a slug lookup unless asked for them
+    (seen live 2026-09-26: two resolved SOL markets came back empty, so
+    their positions sat "unknown" instead of settling) -- so a miss is
+    retried with closed=true."""
+    for params in ({"slug": slug}, {"slug": slug, "closed": "true"}):
+        r = httpx.get(f"{POLY_BASE}/markets", params=params, timeout=20.0)
+        r.raise_for_status()
+        rows = r.json()
+        if rows:
+            return rows[0]
+    return None
 
 
 def polymarket_as_kalshi_shape(pm: dict) -> dict:
