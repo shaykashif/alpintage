@@ -63,6 +63,17 @@ MIN_EDGE = 0.005
 # (misread rules, different settlement dates), not free money. Logged, never
 # traded -- the same lesson as MAX_PLAUSIBLE_EDGE in the sports model.
 MAX_PLAUSIBLE_EDGE = 0.25
+# Looser when every leg is on the same venue AND settles off the same source
+# at the same moment (identical `settlement` keys) -- e.g. two Polymarket SOL
+# price markets both read off Binance SOL/USDT at noon ET. The misreads the
+# 25% bar guards against (different dates, sources, venues' rules) can't
+# apply there; a stray order in a thin book can still make the edge huge.
+MAX_PLAUSIBLE_EDGE_SAME_SETTLEMENT = 0.50
+
+
+def plausible_edge_cap(legs: list[ArbLeg]) -> float:
+    keys = {l.contract.settlement for l in legs}
+    return MAX_PLAUSIBLE_EDGE_SAME_SETTLEMENT if len(keys) == 1 and None not in keys else MAX_PLAUSIBLE_EDGE
 
 RELATIONS = ("a_implies_b", "b_implies_a", "mutually_exclusive", "exhaustive")
 
@@ -178,6 +189,7 @@ class Contract:
     fee_rate: float = 0.0  # Polymarket taker rate; unused for Kalshi
     fee_exponent: float = 1.0
     topic: str | None = None  # "cultural" | "economic" | "geopolitical" (topics.py)
+    settlement: str | None = None  # "venue|source|time" (relation_sources.*_settlement); None = unknown
 
     def ask(self, side: str) -> float | None:
         """Price to BUY `side`. A NO ask is the complement of the YES bid."""
@@ -286,8 +298,9 @@ def _evaluate(kind: str, legs: list[ArbLeg], payout: float, max_notional_per_leg
     arb = Arb(kind, legs, qty, payout, round(cost, 4), round(edge, 4), round(fees, 4))
     if edge <= MIN_EDGE:
         arb.reason = f"edge {edge:.4f} <= MIN_EDGE"
-    elif edge / payout > MAX_PLAUSIBLE_EDGE:
-        arb.reason = f"edge {edge:.3f} implausibly large -- relation probably wrong"
+    elif edge / payout > plausible_edge_cap(legs):
+        same = plausible_edge_cap(legs) == MAX_PLAUSIBLE_EDGE_SAME_SETTLEMENT
+        arb.reason = f"edge {edge:.3f} implausibly large{' even for same-settlement markets' if same else ''} -- relation probably wrong"
     return arb
 
 

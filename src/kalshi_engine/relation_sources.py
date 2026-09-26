@@ -22,6 +22,7 @@ Verified live 2026-09-24:
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -88,6 +89,32 @@ def topic_subjects(events: list[VenueEvent]) -> list[Subject]:
 
 
 # ---- Kalshi ------------------------------------------------------------------
+
+_URL = re.compile(r"https?://([^/\s\"')]+)", re.I)
+
+
+def _host(match: re.Match | None) -> str | None:
+    if not match:
+        return None
+    host = match.group(1).lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def kalshi_settlement(event: dict, m: dict) -> str | None:
+    """"venue|sources|when" -- two markets with the same key settle off the
+    same source at the same moment (relations.MAX_PLAUSIBLE_EDGE_SAME_SETTLEMENT)."""
+    names = sorted({s["name"].strip().lower() for s in event.get("settlement_sources") or [] if s.get("name")})
+    when = m.get("expected_expiration_time") or m.get("close_time")
+    return f"kalshi|{','.join(names)}|{when}" if names and when else None
+
+
+def polymarket_settlement(pm: dict) -> str | None:
+    """Same key for Polymarket. resolutionSource is usually empty, so the
+    source is the site the rules link to (e.g. binance.com)."""
+    host = _host(_URL.search(pm.get("resolutionSource") or "")) or _host(_URL.search(pm.get("description") or ""))
+    end = pm.get("endDate")
+    return f"polymarket|{host}|{end}" if host and end else None
+
 
 def kalshi_context(event: dict, m: dict) -> str:
     sources = ", ".join(s.get("name", "") for s in event.get("settlement_sources") or [] if s.get("name"))
@@ -157,6 +184,7 @@ def kalshi_contracts(events: list[VenueEvent], topics: dict[str, str | None]) ->
                 yes_bid=_f(m.get("yes_bid_dollars")), yes_ask=_f(m.get("yes_ask_dollars")),
                 yes_bid_size=_f(m.get("yes_bid_size_fp")), yes_ask_size=_f(m.get("yes_ask_size_fp")),
                 event_mutually_exclusive=bool(e.raw.get("mutually_exclusive")), topic=topic,
+                settlement=kalshi_settlement(e.raw, m),
             ))
     return out
 
@@ -249,6 +277,7 @@ def polymarket_contracts(events: list[VenueEvent], topics: dict[str, str | None]
                 yes_bid=_f(pm.get("bestBid")), yes_ask=_f(pm.get("bestAsk")),
                 fee_rate=float(sched.get("rate", 0.0)) if fees_on else 0.0,
                 fee_exponent=float(sched.get("exponent", 1.0)), topic=topic,
+                settlement=polymarket_settlement(pm),
             ))
     return out
 

@@ -318,3 +318,43 @@ def test_no_exit_below_the_guarantee_or_without_depth(tmp_path):
 def ledger_fee(qty, price):
     from kalshi_engine.fees import taker_fee
     return taker_fee(qty, price)
+
+
+# --- plausibility cap: looser for same-venue, same-settlement pairs ---------------
+
+def _sol_pair(settle_a, settle_b, no_above=0.45, no_range=0.19):
+    # "SOL above 120" and "SOL 110-120" at noon ET Sep 28: mutually exclusive.
+    a = C("PM-sol-above-120", round(1 - no_above, 4), round(1 - no_above + 0.02, 4), venue="polymarket")
+    b = C("PM-sol-110-120", round(1 - no_range, 4), round(1 - no_range + 0.02, 4), venue="polymarket")
+    a.settlement, b.settlement = settle_a, settle_b
+    return relations.relation_arb("mutually_exclusive", a, b)
+
+
+SOL_KEY = "polymarket|binance.com|2026-09-28T16:00:00Z"
+
+
+def test_same_settlement_pair_may_carry_a_larger_edge():
+    arb = _sol_pair(SOL_KEY, SOL_KEY)  # 0.45 + 0.19: 36c on $1
+    assert arb.edge_per_set == pytest.approx(0.36) and arb.tradeable
+
+
+def test_large_edge_still_blocked_when_settlement_differs_or_is_unknown():
+    assert "implausibly large" in _sol_pair(SOL_KEY, "polymarket|binance.com|2026-09-29T16:00:00Z").reason
+    assert "implausibly large" in _sol_pair(None, None).reason
+
+
+def test_same_settlement_still_has_a_ceiling():
+    arb = _sol_pair(SOL_KEY, SOL_KEY, no_above=0.30, no_range=0.15)  # 55c on $1
+    assert "even for same-settlement" in arb.reason
+
+
+def test_settlement_keys_from_venue_data():
+    from kalshi_engine.relation_sources import kalshi_settlement, polymarket_settlement
+    above = {"description": 'Resolves on the Binance 1 minute candle... https://www.binance.com', "endDate": "2026-09-28T16:00:00Z"}
+    rng = {"description": "Binance SOL/USDT at https://www.binance.com/en/trade/SOL_USDT with 1m", "endDate": "2026-09-28T16:00:00Z"}
+    assert polymarket_settlement(above) == polymarket_settlement(rng) == SOL_KEY
+    assert polymarket_settlement({"description": "no link here", "endDate": "x"}) is None
+    ev = {"settlement_sources": [{"name": "Netflix Top 10", "url": "https://top10.netflix.com"}]}
+    m = {"expected_expiration_time": "2026-09-30T14:00:00Z"}
+    assert kalshi_settlement(ev, m) == "kalshi|netflix top 10|2026-09-30T14:00:00Z"
+    assert kalshi_settlement({}, m) is None
